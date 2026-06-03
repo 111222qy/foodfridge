@@ -110,20 +110,20 @@ fun FridgeHomeScreen(
             onFaceFrame = viewModel::onFaceDetectionFrame,
         )
 
-        // 内容区域 - 左右两列并排显示
+        // 内容区域 - 三列并排显示
         Row(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // 左列：今天
+            // 第一天
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                DaySectionTitle(title = "今天", dateStr = getTodayDateStr())
-                uiState.todayCards.forEach { card ->
+                DaySectionTitle(title = "第一天", dateStr = getDayDateStr(-2))
+                uiState.day1Cards.forEach { card ->
                     CompactMealStatusCard(
                         mealType = card.mealType,
                         status = card.status,
@@ -138,13 +138,13 @@ fun FridgeHomeScreen(
                 }
             }
 
-            // 右列：昨天
+            // 第二天
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                DaySectionTitle(title = "昨天", dateStr = getYesterdayDateStr())
-                uiState.yesterdayCards.forEach { card ->
+                DaySectionTitle(title = "第二天", dateStr = getDayDateStr(-1))
+                uiState.day2Cards.forEach { card ->
                     CompactMealStatusCard(
                         mealType = card.mealType,
                         status = card.status,
@@ -152,7 +152,28 @@ fun FridgeHomeScreen(
                         isAuthenticated = uiState.isAuthenticated,
                         onClick = {
                             if (uiState.isAuthenticated) {
-                                onNavigateToBarcodeScan(card.mealType.name, -1)
+                                onNavigateToBarcodeScan(card.mealType.name, 1)
+                            }
+                        },
+                    )
+                }
+            }
+
+            // 第三天
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                DaySectionTitle(title = "第三天", dateStr = getDayDateStr(0))
+                uiState.day3Cards.forEach { card ->
+                    CompactMealStatusCard(
+                        mealType = card.mealType,
+                        status = card.status,
+                        latestSample = card.latestSample,
+                        isAuthenticated = uiState.isAuthenticated,
+                        onClick = {
+                            if (uiState.isAuthenticated) {
+                                onNavigateToBarcodeScan(card.mealType.name, 2)
                             }
                         },
                     )
@@ -627,12 +648,7 @@ private fun MealStatusCard(
     }
 }
 
-private fun getTodayDateStr(): String {
+private fun getDayDateStr(dayOffsetFromToday: Int): String {
     return SimpleDateFormat("MM月dd日", Locale.getDefault())
-        .format(java.util.Date())
-}
-
-private fun getYesterdayDateStr(): String {
-    return SimpleDateFormat("MM月dd日", Locale.getDefault())
-        .format(java.util.Date(System.currentTimeMillis() - 24 * 60 * 60 * 1000))
+        .format(java.util.Date(System.currentTimeMillis() + dayOffsetFromToday * 24L * 60 * 60 * 1000))
 }

@@ -56,7 +56,10 @@ class SampleTableViewModel @Inject constructor(
                     set(Calendar.SECOND, 0)
                     set(Calendar.MILLISECOND, 0)
                 }
-                val dayStart = calendar.timeInMillis + _uiState.value.dayOffset * 24L * 60 * 60 * 1000
+                val todayStart = calendar.timeInMillis
+                // dayOffset: 0=第一天(baseDate-2天), 1=第二天(baseDate-1天), 2=第三天(baseDate当天)
+                val actualOffset = _uiState.value.dayOffset - 2
+                val dayStart = todayStart + actualOffset * 24L * 60 * 60 * 1000
                 val dayEnd = dayStart + 24 * 60 * 60 * 1000
 
                 foodSampleRepository.getSamplesByMealAndDate(

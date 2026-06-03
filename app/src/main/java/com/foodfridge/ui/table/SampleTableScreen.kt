@@ -69,7 +69,12 @@ fun SampleTableScreen(
     }
 
     val mealTypeEnum = MealType.valueOf(mealType)
-    val dayLabel = if (dayOffset == 0) "今天" else "昨天"
+    val dayLabel = when (dayOffset) {
+        0 -> "第一天"
+        1 -> "第二天"
+        2 -> "第三天"
+        else -> "今天"
+    }
 
     Column(
         modifier = Modifier

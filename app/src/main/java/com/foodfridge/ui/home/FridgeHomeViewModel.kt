@@ -43,8 +43,9 @@ data class AuthUser(
 data class FridgeHomeUiState(
     val temperature: Float = 4.0f,
     val isTemperatureAlarm: Boolean = false,
-    val todayCards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 0) },
-    val yesterdayCards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, -1) },
+    val day1Cards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 0) },
+    val day2Cards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 1) },
+    val day3Cards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 2) },
     val isAuthenticated: Boolean = false,
     val authUsers: List<AuthUser> = emptyList(),
     val currentUserName: String? = null,
@@ -76,6 +77,18 @@ class FridgeHomeViewModel @Inject constructor(
     private var faceDetectionCount = 0
     private var lastFaceDetectionAt = 0L
     private val viewModelCreatedAt = System.currentTimeMillis()
+
+    // 三天显示的基准日期（初始化为当天00:00），第一天 = baseDate - 2天
+    private var baseDate: Long = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+    companion object {
+        private const val DAY_MILLIS = 24L * 60 * 60 * 1000
+    }
 
     init {
         viewModelScope.launch(Dispatchers.Default) {
@@ -243,58 +256,94 @@ class FridgeHomeViewModel @Inject constructor(
 
     private fun loadMealStates() {
         viewModelScope.launch {
-            val calendar = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            val todayStart = calendar.timeInMillis
-            val todayEnd = todayStart + 24 * 60 * 60 * 1000
-            val yesterdayStart = todayStart - 24 * 60 * 60 * 1000
+            val day1Start = baseDate - 2 * DAY_MILLIS
+            val day1End = baseDate - DAY_MILLIS
+            val day2Start = baseDate - DAY_MILLIS
+            val day2End = baseDate
+            val day3Start = baseDate
+            val day3End = baseDate + DAY_MILLIS
 
+            // 第一天
             MealType.entries.forEach { mealType ->
                 launch {
                     foodSampleRepository.getSamplesByMealAndDate(
-                        mealType.name, todayStart, todayEnd
+                        mealType.name, day1Start, day1End
                     ).collect { samples ->
                         val latest = samples.firstOrNull()
                         val status = latest?.status ?: SampleStatus.WAITING
-                        updateTodayCard(mealType, status, latest)
+                        updateDay1Card(mealType, status, latest)
                     }
                 }
             }
 
+            // 第二天
             MealType.entries.forEach { mealType ->
                 launch {
                     foodSampleRepository.getSamplesByMealAndDate(
-                        mealType.name, yesterdayStart, todayStart
+                        mealType.name, day2Start, day2End
                     ).collect { samples ->
                         val latest = samples.firstOrNull()
                         val status = latest?.status ?: SampleStatus.WAITING
-                        updateYesterdayCard(mealType, status, latest)
+                        updateDay2Card(mealType, status, latest)
+                    }
+                }
+            }
+
+            // 第三天
+            MealType.entries.forEach { mealType ->
+                launch {
+                    foodSampleRepository.getSamplesByMealAndDate(
+                        mealType.name, day3Start, day3End
+                    ).collect { samples ->
+                        val latest = samples.firstOrNull()
+                        val status = latest?.status ?: SampleStatus.WAITING
+                        updateDay3Card(mealType, status, latest)
                     }
                 }
             }
         }
     }
 
-    private fun updateTodayCard(mealType: MealType, status: SampleStatus, sample: FoodSample?) {
-        val currentCards = _uiState.value.todayCards.toMutableList()
+    private fun updateDay1Card(mealType: MealType, status: SampleStatus, sample: FoodSample?) {
+        val currentCards = _uiState.value.day1Cards.toMutableList()
         val index = currentCards.indexOfFirst { it.mealType == mealType }
         if (index >= 0) {
             currentCards[index] = MealCardState(mealType, status, 0, sample)
-            _uiState.value = _uiState.value.copy(todayCards = currentCards)
+            _uiState.value = _uiState.value.copy(day1Cards = currentCards)
         }
     }
 
-    private fun updateYesterdayCard(mealType: MealType, status: SampleStatus, sample: FoodSample?) {
-        val currentCards = _uiState.value.yesterdayCards.toMutableList()
+    private fun updateDay2Card(mealType: MealType, status: SampleStatus, sample: FoodSample?) {
+        val currentCards = _uiState.value.day2Cards.toMutableList()
         val index = currentCards.indexOfFirst { it.mealType == mealType }
         if (index >= 0) {
-            currentCards[index] = MealCardState(mealType, status, -1, sample)
-            _uiState.value = _uiState.value.copy(yesterdayCards = currentCards)
+            currentCards[index] = MealCardState(mealType, status, 1, sample)
+            _uiState.value = _uiState.value.copy(day2Cards = currentCards)
         }
+    }
+
+    private fun updateDay3Card(mealType: MealType, status: SampleStatus, sample: FoodSample?) {
+        val currentCards = _uiState.value.day3Cards.toMutableList()
+        val index = currentCards.indexOfFirst { it.mealType == mealType }
+        if (index >= 0) {
+            currentCards[index] = MealCardState(mealType, status, 2, sample)
+            _uiState.value = _uiState.value.copy(day3Cards = currentCards)
+        }
+    }
+
+    /**
+     * 日期滚动：当第一天晚餐被消样后，baseDate增加1天，重新加载所有数据
+     */
+    private fun rollDayOffsets() {
+        baseDate += DAY_MILLIS
+        Log.i("FridgeHome", "日期滚动触发，新baseDate=${baseDate}")
+        // 重置所有卡片为WAITING状态，然后重新加载
+        _uiState.value = _uiState.value.copy(
+            day1Cards = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 0) },
+            day2Cards = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 1) },
+            day3Cards = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 2) },
+        )
+        loadMealStates()
     }
 
     private fun startTemperatureSimulation() {
@@ -322,10 +371,28 @@ class FridgeHomeViewModel @Inject constructor(
             while (isActive) {
                 val now = System.currentTimeMillis()
                 val expired = foodSampleRepository.getExpiredSamples(now)
+                var shouldRollDay = false
+
                 expired.forEach { sample ->
                     foodSampleRepository.updateStatus(sample.id, SampleStatus.WAITING_DISPOSE.name)
                     Log.i("FridgeHome", "留样已过期: ${sample.foodName}, 自动标记为待消样")
+
+                    // 检测是否是第一天的晚餐被消样，触发日期滚动
+                    val day1Start = baseDate - 2 * DAY_MILLIS
+                    val day1End = baseDate - DAY_MILLIS
+                    if (sample.mealType == MealType.DINNER &&
+                        sample.createdAt in day1Start until day1End &&
+                        sample.status == SampleStatus.STORING
+                    ) {
+                        shouldRollDay = true
+                        Log.i("FridgeHome", "检测到第一天晚餐消样，准备触发日期滚动")
+                    }
                 }
+
+                if (shouldRollDay) {
+                    rollDayOffsets()
+                }
+
                 delay(60_000)
             }
         }
