@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p app/src/main)",
+      "Bash(cp -r /s/smartscale/app/build.gradle.kts /s/smartscale/app/proguard-rules.pro app/)",
+      "Bash(cp -r /s/smartscale/app/src/main/res app/src/main/)",
+      "Bash(cp -r /s/smartscale/app/src/main/AndroidManifest.xml app/src/main/)",
+      "Bash(cp -r /s/smartscale/app/src/main/cpp app/src/main/)"
+    ]
+  }
+}

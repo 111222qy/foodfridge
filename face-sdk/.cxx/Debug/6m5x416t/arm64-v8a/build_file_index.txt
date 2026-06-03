@@ -1,0 +1,1 @@
+S:\smartscale\face-sdk\src\main\cpp\CMakeLists.txt

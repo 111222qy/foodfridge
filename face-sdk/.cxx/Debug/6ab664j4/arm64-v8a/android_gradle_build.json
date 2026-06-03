@@ -1,0 +1,46 @@
+{
+  "buildFiles": [
+    "S:\\foodfridge\\face-sdk\\src\\main\\cpp\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "S:\\android\\sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "S:\\foodfridge\\face-sdk\\.cxx\\Debug\\6ab664j4\\arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "S:\\android\\sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "S:\\foodfridge\\face-sdk\\.cxx\\Debug\\6ab664j4\\arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "face_sdk::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "face_sdk",
+      "output": "D:\\SmartScaleBuild\\SmartScaleBuild\\run-1780219879395-ad04b77b-1668-48f3-b62e-3dc0f48cda99\\face-sdk\\intermediates\\cxx\\Debug\\6ab664j4\\obj\\arm64-v8a\\libface_sdk.so",
+      "runtimeFiles": [
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libSeetaFaceDetector600.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libSeetaFaceLandmarker600.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libSeetaFaceRecognizer600.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libSeetaFaceAntiSpoofingX600.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libSeetaFaceTracking600.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libQualityAssessor300.so",
+        "S:\\foodfridge\\face-sdk\\src\\main\\jniLibs\\arm64-v8a\\libTenniS.so"
+      ]
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "S:\\android\\sdk\\ndk\\25.1.8937393\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang.exe",
+      "cppCompilerExecutable": "S:\\android\\sdk\\ndk\\25.1.8937393\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe"
+    }
+  },
+  "cFileExtensions": [],
+  "cppFileExtensions": [
+    "cpp"
+  ]
+}

@@ -1,0 +1,1 @@
+C:\Users\18372\AppData\Local\SmartScaleBuild\stable\face-sdk\intermediates\cxx\Debug\571h2a2z\obj\arm64-v8a

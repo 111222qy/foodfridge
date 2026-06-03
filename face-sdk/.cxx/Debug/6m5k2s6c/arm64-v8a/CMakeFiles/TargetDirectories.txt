@@ -1,0 +1,3 @@
+S:/foodfridge/face-sdk/.cxx/Debug/6m5k2s6c/arm64-v8a/CMakeFiles/face_sdk.dir
+S:/foodfridge/face-sdk/.cxx/Debug/6m5k2s6c/arm64-v8a/CMakeFiles/edit_cache.dir
+S:/foodfridge/face-sdk/.cxx/Debug/6m5k2s6c/arm64-v8a/CMakeFiles/rebuild_cache.dir
