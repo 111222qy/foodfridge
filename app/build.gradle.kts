@@ -142,6 +142,9 @@ dependencies {
     // Crypto
     implementation("org.bouncycastle:bcprov-jdk15on:1.70")
 
+    // ML Kit Barcode Scanning
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
     // Logging
     implementation("com.jakewharton.timber:timber:5.0.1")
 

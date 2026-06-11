@@ -36,8 +36,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -57,6 +59,9 @@ fun SampleTableScreen(
     dayOffset: Int,
     barcode: String,
     foodName: String,
+    weightGrams: Float,
+    scanTime: Long,
+    scanMealType: String,
     onNavigateBack: () -> Unit,
     onSaveComplete: () -> Unit,
     viewModel: SampleTableViewModel = hiltViewModel(),
@@ -64,8 +69,8 @@ fun SampleTableScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val scrollState = rememberScrollState()
 
-    LaunchedEffect(mealType, dayOffset, barcode, foodName) {
-        viewModel.init(mealType, dayOffset, barcode, foodName)
+    LaunchedEffect(mealType, dayOffset, barcode, foodName, weightGrams) {
+        viewModel.init(mealType, dayOffset, barcode, foodName, weightGrams)
     }
 
     val mealTypeEnum = MealType.valueOf(mealType)
@@ -118,7 +123,13 @@ fun SampleTableScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // 扫描结果摘要
-            ScanResultCard(barcode = barcode, foodName = foodName)
+            ScanResultCard(
+                barcode = barcode,
+                foodName = foodName,
+                weightGrams = weightGrams,
+                scanTime = scanTime,
+                scanMealType = scanMealType,
+            )
 
             // 留样记录表格
             Text(
@@ -215,7 +226,22 @@ fun SampleTableScreen(
 }
 
 @Composable
-private fun ScanResultCard(barcode: String, foodName: String) {
+private fun ScanResultCard(
+    barcode: String,
+    foodName: String,
+    weightGrams: Float,
+    scanTime: Long,
+    scanMealType: String,
+) {
+    val timeStr = remember(scanTime) {
+        if (scanTime > 0) {
+            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                .format(java.util.Date(scanTime))
+        } else {
+            ""
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -226,7 +252,7 @@ private fun ScanResultCard(barcode: String, foodName: String) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
                 text = "扫描结果",
@@ -234,36 +260,79 @@ private fun ScanResultCard(barcode: String, foodName: String) {
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF2563EB),
             )
+
+            // 第一行：菜品名 + 餐次标签
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = foodName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF111827),
+                    modifier = Modifier.weight(1f),
+                )
+                if (scanMealType.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2563EB).copy(alpha = 0.1f))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = scanMealType,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF2563EB),
+                        )
+                    }
+                }
+            }
+
+            // 第二行：重量 + 时间
             Row(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "条形码",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6B7280),
-                    )
-                    Text(
-                        text = barcode,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF111827),
-                    )
+                if (weightGrams > 0) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "重量",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF6B7280),
+                        )
+                        Text(
+                            text = "${weightGrams}g",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF111827),
+                        )
+                    }
                 }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "食品名称",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6B7280),
-                    )
-                    Text(
-                        text = foodName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = Color(0xFF111827),
-                    )
+                if (timeStr.isNotBlank()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "留样时间",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF6B7280),
+                        )
+                        Text(
+                            text = timeStr,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF111827),
+                        )
+                    }
                 }
             }
+
+            // 条形码（较小字体）
+            Text(
+                text = "条码: $barcode",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF9CA3AF),
+                fontSize = 11.sp,
+            )
         }
     }
 }

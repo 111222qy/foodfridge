@@ -145,9 +145,17 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                 mealType = mealType,
                 dayOffset = dayOffset,
                 onNavigateBack = { navController.popBackStack() },
-                onScanComplete = { barcode, foodName ->
+                onScanComplete = { barcode, payload ->
                     navController.navigate(
-                        Screen.SampleTable.createRoute(mealType, dayOffset, barcode, foodName)
+                        Screen.SampleTable.createRoute(
+                            mealType = mealType,
+                            dayOffset = dayOffset,
+                            barcode = barcode,
+                            foodName = payload.dishName,
+                            weightGrams = payload.weightGrams,
+                            scanTime = payload.timestamp,
+                            scanMealType = payload.mealType,
+                        )
                     ) {
                         launchSingleTop = true
                         popUpTo(Screen.BarcodeScan.route) { inclusive = true }
@@ -165,11 +173,20 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                 ?.getString("barcode") ?: ""
             val foodName = backStackEntry.arguments
                 ?.getString("foodName") ?: ""
+            val weightGrams = backStackEntry.arguments
+                ?.getString("weightGrams")?.toFloatOrNull() ?: 0f
+            val scanTime = backStackEntry.arguments
+                ?.getString("scanTime")?.toLongOrNull() ?: 0L
+            val scanMealType = backStackEntry.arguments
+                ?.getString("scanMealType") ?: ""
             SampleTableScreen(
                 mealType = mealType,
                 dayOffset = dayOffset,
                 barcode = barcode,
                 foodName = foodName,
+                weightGrams = weightGrams,
+                scanTime = scanTime,
+                scanMealType = scanMealType,
                 onNavigateBack = { navController.popBackStack() },
                 onSaveComplete = {
                     navController.popBackStack(Screen.Home.route, inclusive = false)

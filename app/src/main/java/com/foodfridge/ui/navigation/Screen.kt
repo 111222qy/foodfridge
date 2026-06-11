@@ -15,8 +15,15 @@ sealed class Screen(val route: String) {
     object BarcodeScan : Screen("barcode_scan/{mealType}/{dayOffset}") {
         fun createRoute(mealType: String, dayOffset: Int) = "barcode_scan/$mealType/$dayOffset"
     }
-    object SampleTable : Screen("sample_table/{mealType}/{dayOffset}/{barcode}/{foodName}") {
-        fun createRoute(mealType: String, dayOffset: Int, barcode: String, foodName: String) =
-            "sample_table/$mealType/$dayOffset/$barcode/$foodName"
+    object SampleTable : Screen("sample_table/{mealType}/{dayOffset}/{barcode}/{foodName}/{weightGrams}/{scanTime}/{scanMealType}") {
+        fun createRoute(
+            mealType: String,
+            dayOffset: Int,
+            barcode: String,
+            foodName: String,
+            weightGrams: Float = 0f,
+            scanTime: Long = 0L,
+            scanMealType: String = "",
+        ) = "sample_table/$mealType/$dayOffset/$barcode/$foodName/$weightGrams/$scanTime/$scanMealType"
     }
 }

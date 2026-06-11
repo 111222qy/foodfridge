@@ -36,12 +36,24 @@ class SampleTableViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SampleTableUiState())
     val uiState: StateFlow<SampleTableUiState> = _uiState.asStateFlow()
 
-    fun init(mealType: String, dayOffset: Int, barcode: String, foodName: String) {
+    fun init(
+        mealType: String,
+        dayOffset: Int,
+        barcode: String,
+        foodName: String,
+        weightGrams: Float = 0f,
+    ) {
+        val weightString = if (weightGrams > 0) {
+            String.format(java.util.Locale.US, "%.1f", weightGrams)
+        } else {
+            ""
+        }
         _uiState.value = _uiState.value.copy(
             mealType = mealType,
             dayOffset = dayOffset,
             barcode = barcode,
             foodName = foodName,
+            weightGrams = weightString,
         )
         loadSamples()
     }
@@ -99,7 +111,7 @@ class SampleTableViewModel @Inject constructor(
                 val expireTime = now + 48 * 60 * 60 * 1000
 
                 foodSampleRepository.insertSample(
-                    com.foodfridge.domain.model.FoodSample(
+                    FoodSample(
                         id = 0,
                         operatorId = 1, // 使用当前认证用户ID
                         operatorName = "当前用户", // 使用当前认证用户名
