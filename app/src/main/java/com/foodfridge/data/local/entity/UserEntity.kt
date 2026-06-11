@@ -26,5 +26,8 @@ data class UserEntity(
     val password: String? = null,
 
     @ColumnInfo(name = "face_embedding", typeAffinity = ColumnInfo.BLOB)
-    val faceEmbedding: ByteArray? = null
+    val faceEmbedding: ByteArray? = null,
+
+    @ColumnInfo(name = "face_photo_path")
+    val facePhotoPath: String? = null
 )

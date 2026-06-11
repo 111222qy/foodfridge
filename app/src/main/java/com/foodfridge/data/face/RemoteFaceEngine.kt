@@ -50,6 +50,11 @@ class RemoteFaceEngine @Inject constructor(
         return false
     }
 
+    override fun detectAndCropFace(bitmap: Bitmap): Bitmap? {
+        // RemoteFaceEngine 不用于人脸注册，裁剪操作在 SeetaFaceEngine 中完成
+        return null
+    }
+
     override fun init(context: Context) {
         val service = ensureRemoteService() ?: return
         runCatching { service.init() }

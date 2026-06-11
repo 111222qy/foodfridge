@@ -1,8 +1,10 @@
 package com.foodfridge.di
 
+import com.foodfridge.data.repository.DeviceRepositoryImpl
 import com.foodfridge.data.repository.FoodSampleRepositoryImpl
 import com.foodfridge.data.repository.TemperatureRepositoryImpl
 import com.foodfridge.data.repository.UserRepositoryImpl
+import com.foodfridge.domain.repository.DeviceRepository
 import com.foodfridge.domain.repository.FoodSampleRepository
 import com.foodfridge.domain.repository.TemperatureRepository
 import com.foodfridge.domain.repository.UserRepository
@@ -33,4 +35,10 @@ abstract class RepositoryModule {
     abstract fun bindTemperatureRepository(
         temperatureRepositoryImpl: TemperatureRepositoryImpl
     ): TemperatureRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindDeviceRepository(
+        deviceRepositoryImpl: DeviceRepositoryImpl
+    ): DeviceRepository
 }

@@ -12,12 +12,15 @@ import androidx.lifecycle.viewModelScope
 import com.foodfridge.domain.face.FaceEngine
 import com.foodfridge.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import javax.inject.Inject
 
 private const val REQUIRED_FRAMES = 3
@@ -26,6 +29,7 @@ private const val REQUIRED_FRAMES = 3
 class FaceEnrollViewModel @Inject constructor(
     private val faceEngine: FaceEngine,
     private val userRepository: UserRepository,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     var isRegistering by mutableStateOf(false)
@@ -119,28 +123,16 @@ class FaceEnrollViewModel @Inject constructor(
                 return
             }
 
-            // Detect face using FaceEngine
-            Log.d("FaceEnroll", "Calling faceEngine.detect with frame: ${argbFrame.width}x${argbFrame.height}")
-            val hasFace = faceEngine.detect(argbFrame)
-            Log.d("FaceEnroll", "Face detection result: hasFace=$hasFace")
+            // Detect face and crop face region for avatar photo
+            Log.d("FaceEnroll", "Calling faceEngine.detectAndCropFace with frame: ${argbFrame.width}x${argbFrame.height}")
+            val croppedFace = faceEngine.detectAndCropFace(argbFrame)
+            runCatching { argbFrame.recycle() }
+            Log.d("FaceEnroll", "Face crop result: ${croppedFace != null}")
 
-            if (!hasFace) {
-                Log.d("FaceEnroll", "No face detected, recycling frame")
-                runCatching { argbFrame.recycle() }
+            if (croppedFace == null) {
+                Log.d("FaceEnroll", "No face detected or crop failed")
                 withContext(Dispatchers.Main) {
                     message = "未检测到人脸，请将人脸对准摄像头"
-                }
-                return
-            }
-
-            // Create a copy for storage
-            val snapshot = argbFrame.copy(Bitmap.Config.ARGB_8888, false)
-            runCatching { argbFrame.recycle() }
-
-            if (snapshot == null) {
-                Log.e("FaceEnroll", "Failed to create snapshot copy")
-                withContext(Dispatchers.Main) {
-                    message = "帧处理失败，请重试"
                 }
                 return
             }
@@ -148,11 +140,11 @@ class FaceEnrollViewModel @Inject constructor(
             // Mutex-protect capturedFrames to prevent concurrent registration races
             val currentCount = captureLock.withLock {
                 if (isRegistering || success || capturedFrames.size >= REQUIRED_FRAMES) {
-                    Log.d("FaceEnroll", "Snapshot discarded: isRegistering=$isRegistering, success=$success, size=${capturedFrames.size}")
-                    runCatching { snapshot.recycle() }
+                    Log.d("FaceEnroll", "Cropped face discarded: isRegistering=$isRegistering, success=$success, size=${capturedFrames.size}")
+                    runCatching { croppedFace.recycle() }
                     return
                 }
-                capturedFrames.add(snapshot)
+                capturedFrames.add(croppedFace)
                 capturedFrames.size
             }
 
@@ -186,10 +178,27 @@ class FaceEnrollViewModel @Inject constructor(
             isRegistering = true
         }
 
+        // 保存第一帧作为人脸照片（在注册前，避免 finally 中回收后无法保存）
+        val photoPath = saveFacePhoto(currentUserId, capturedFrames.first())
+
         try {
             Log.d("FaceEnroll", "Starting registration with ${capturedFrames.size} frames")
             val result = faceEngine.registerUser(currentUserId, capturedFrames.toList())
             Log.d("FaceEnroll", "Registration result: $result")
+
+            // 注册成功后更新用户的 facePhotoPath
+            if (result && photoPath != null) {
+                try {
+                    val user = userRepository.getUserById(currentUserId)
+                    if (user != null) {
+                        userRepository.updateUser(user.copy(facePhotoPath = photoPath))
+                        Log.d("FaceEnroll", "Updated user facePhotoPath: $photoPath")
+                    }
+                } catch (e: Exception) {
+                    Log.e("FaceEnroll", "Failed to update user facePhotoPath", e)
+                }
+            }
+
             withContext(Dispatchers.Main) {
                 success = result
                 isRegistering = false
@@ -207,6 +216,24 @@ class FaceEnrollViewModel @Inject constructor(
                 if (!it.isRecycled) runCatching { it.recycle() }
             }
             capturedFrames.clear()
+        }
+    }
+
+    private fun saveFacePhoto(userId: Int, bitmap: Bitmap): String? {
+        return try {
+            val dir = File(context.filesDir, "face_photos")
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+            val file = File(dir, "user_$userId.jpg")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+            Log.d("FaceEnroll", "Face photo saved to: ${file.absolutePath}")
+            file.absolutePath
+        } catch (e: Exception) {
+            Log.e("FaceEnroll", "Failed to save face photo", e)
+            null
         }
     }
 

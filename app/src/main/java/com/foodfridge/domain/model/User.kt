@@ -7,5 +7,6 @@ data class User(
     val role: String = "SAMPLER", // SUPERVISOR(监督员), SAMPLER(留样员), ADMIN(管理员)
     val isActive: Boolean,
     val password: String? = null,
-    val faceEmbedding: ByteArray? = null
+    val faceEmbedding: ByteArray? = null,
+    val facePhotoPath: String? = null
 )

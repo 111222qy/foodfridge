@@ -17,6 +17,8 @@ data class SettingsUiState(
     val users: List<User> = emptyList(),
     val isLoading: Boolean = false,
     val dualFaceAuthEnabled: Boolean = false,
+    val currentUserName: String = "admin",
+    val adminPassword: String? = null,
     val errorMessage: String? = null,
 )
 
@@ -31,12 +33,33 @@ class SettingsViewModel @Inject constructor(
 
     init {
         loadDualFaceAuthConfig()
+        loadAdminPassword()
     }
 
     private fun loadDualFaceAuthConfig() {
         viewModelScope.launch {
             val enabled = userPreferencesRepository.dualFaceAuthEnabled.first()
             _uiState.value = _uiState.value.copy(dualFaceAuthEnabled = enabled)
+        }
+    }
+
+    fun loadAdminPassword() {
+        viewModelScope.launch {
+            val password = userPreferencesRepository.adminPassword.first()
+            _uiState.value = _uiState.value.copy(adminPassword = password)
+        }
+    }
+
+    fun changeAdminPassword(newPassword: String) {
+        viewModelScope.launch {
+            try {
+                userPreferencesRepository.saveAdminPassword(newPassword)
+                _uiState.value = _uiState.value.copy(adminPassword = newPassword)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "修改密码失败: ${e.message}",
+                )
+            }
         }
     }
 
@@ -78,6 +101,26 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun addUserAndGetId(fullName: String, employeeId: String, role: String, onUserCreated: (Int) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val user = User(
+                    id = 0,
+                    fullName = fullName,
+                    employeeId = employeeId,
+                    role = role,
+                    isActive = true,
+                )
+                val userId = userRepository.insertUser(user)
+                onUserCreated(userId.toInt())
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "添加失败: ${e.message}",
+                )
+            }
+        }
+    }
+
     fun deleteUser(userId: Int) {
         viewModelScope.launch {
             try {
@@ -85,6 +128,20 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     errorMessage = "删除失败: ${e.message}",
+                )
+            }
+        }
+    }
+
+    fun deleteUsers(userIds: Set<Int>) {
+        viewModelScope.launch {
+            try {
+                userIds.forEach { userId ->
+                    userRepository.deleteUserById(userId)
+                }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "批量删除失败: ${e.message}",
                 )
             }
         }

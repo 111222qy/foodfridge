@@ -15,7 +15,7 @@ import com.foodfridge.data.local.entity.UserEntity
         FoodSampleEntity::class,
         TemperatureRecordEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

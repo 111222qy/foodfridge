@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.util.Log
 import java.util.Calendar
 import javax.inject.Inject
@@ -38,7 +40,7 @@ data class AuthUser(
     val userId: String,
     val userName: String,
     val role: String,
-)
+) : java.io.Serializable
 
 data class FridgeHomeUiState(
     val temperature: Float = 4.0f,
@@ -56,6 +58,7 @@ data class FridgeHomeUiState(
     val pendingDayOffset: Int = 0,
     val faceDetectionFrames: Int = 0,
     val showAuthGate: Boolean = false,
+    val isProcessingAuth: Boolean = false,
 )
 
 @HiltViewModel
@@ -76,7 +79,10 @@ class FridgeHomeViewModel @Inject constructor(
     private var authExpiryJob: Job? = null
     private var faceDetectionCount = 0
     private var lastFaceDetectionAt = 0L
+    private val faceDetectionMutex = Mutex()
     private val viewModelCreatedAt = System.currentTimeMillis()
+    // 认证门关闭后的冷却时间戳，防止从Gate返回后立即被首页人脸检测重新触发
+    private var authGateCooldownUntil = 0L
 
     // 三天显示的基准日期（初始化为当天00:00），第一天 = baseDate - 2天
     private var baseDate: Long = Calendar.getInstance().apply {
@@ -173,83 +179,107 @@ class FridgeHomeViewModel @Inject constructor(
      */
     fun onUserAuthenticated(userId: Int) {
         viewModelScope.launch {
-            val user = userRepository.getUserById(userId)
-            if (user == null || !user.isActive) {
-                Log.w("FridgeHome", "认证用户不存在或已停用: $userId")
+            val currentState = _uiState.value
+            Log.d("FridgeHome", "onUserAuthenticated 开始: userId=$userId, isAuthenticated=${currentState.isAuthenticated}, authUsers=${currentState.authUsers.size}, dualEnabled=${currentState.dualFaceAuthEnabled}, isProcessingAuth=${currentState.isProcessingAuth}")
+
+            // 防重复处理：如果已认证且 authUsers 非空（单人脸）或已有 2 人（双人脸），跳过
+            if (currentState.isAuthenticated &&
+                (!currentState.dualFaceAuthEnabled && currentState.authUsers.isNotEmpty() ||
+                 currentState.dualFaceAuthEnabled && currentState.authUsers.size >= 2)
+            ) {
+                Log.i("FridgeHome", "用户已认证，跳过重复处理: $userId")
+                _uiState.value = _uiState.value.copy(isProcessingAuth = false)
                 return@launch
             }
 
-            val dualEnabled = userPreferencesRepository.dualFaceAuthEnabled.first()
-            val currentUsers = _uiState.value.authUsers.toMutableList()
-
-            // 避免重复添加同一用户
-            if (currentUsers.any { it.userId == userId.toString() }) {
-                Log.i("FridgeHome", "用户已认证，跳过重复: ${user.fullName}")
-                return@launch
-            }
-
-            if (!dualEnabled) {
-                // 单人脸模式：直接通过
-                val authUser = AuthUser(userId.toString(), user.fullName, user.role)
-                _uiState.value = _uiState.value.copy(
-                    isAuthenticated = true,
-                    authUsers = listOf(authUser),
-                    currentUserName = user.fullName,
-                    authPromptMessage = "已认证: ${user.fullName}",
-                )
-                startAuthExpiryTimer()
-                Log.i("FridgeHome", "单人脸认证通过: ${user.fullName} (${user.role})")
-                return@launch
-            }
-
-            // 双人脸模式
-            if (currentUsers.isEmpty()) {
-                // 第一个认证
-                val authUser = AuthUser(userId.toString(), user.fullName, user.role)
-                currentUsers.add(authUser)
-                val prompt = buildSingleAuthPrompt(authUser)
-                _uiState.value = _uiState.value.copy(
-                    authUsers = currentUsers,
-                    currentUserName = user.fullName,
-                    authPromptMessage = prompt,
-                    isAuthenticated = false,
-                )
-                startAuthExpiryTimer()
-                // 如果不是监督员/留样员，提示需要正确角色
-                if (user.role != "SUPERVISOR" && user.role != "SAMPLER") {
-                    _uiState.value = _uiState.value.copy(
-                        authPromptMessage = "双人脸模式需要监督员+留样员，当前角色不符合"
-                    )
+            // 先立即标记为已认证，阻止相机检测（即使后续验证失败也会回滚）
+            _uiState.value = _uiState.value.copy(isAuthenticated = true)
+            try {
+                val user = userRepository.getUserById(userId)
+                if (user == null || !user.isActive) {
+                    Log.w("FridgeHome", "认证用户不存在或已停用: $userId")
+                    _uiState.value = _uiState.value.copy(isAuthenticated = false)
+                    return@launch
                 }
-                Log.i("FridgeHome", "双人脸第一认证: ${user.fullName} (${user.role})")
-            } else {
-                // 第二个认证
-                val firstUser = currentUsers.first()
-                val isComplementary = (firstUser.role == "SUPERVISOR" && user.role == "SAMPLER") ||
-                        (firstUser.role == "SAMPLER" && user.role == "SUPERVISOR")
 
-                if (isComplementary) {
+                // 使用 UI state 中的 dualFaceAuthEnabled，避免 DataStore 异步读取延迟/不一致
+                val dualEnabled = _uiState.value.dualFaceAuthEnabled
+                Log.d("FridgeHome", "使用 UI state 的 dualFaceAuthEnabled=$dualEnabled")
+                val currentUsers = _uiState.value.authUsers.toMutableList()
+
+                // 避免重复添加同一用户
+                if (currentUsers.any { it.userId == userId.toString() }) {
+                    Log.i("FridgeHome", "用户已认证，跳过重复: ${user.fullName}")
+                    return@launch
+                }
+
+                if (!dualEnabled) {
+                    // 单人脸模式：直接通过
                     val authUser = AuthUser(userId.toString(), user.fullName, user.role)
-                    currentUsers.add(authUser)
                     _uiState.value = _uiState.value.copy(
                         isAuthenticated = true,
-                        authUsers = currentUsers,
-                        authPromptMessage = "双认证通过: ${firstUser.userName}(监督员) + ${user.fullName}(留样员)",
+                        authUsers = listOf(authUser),
+                        currentUserName = user.fullName,
+                        authPromptMessage = "已认证: ${user.fullName}",
                     )
                     startAuthExpiryTimer()
-                    Log.i("FridgeHome", "双人脸认证全部通过")
-                } else {
-                    // 角色不互补，需要重新认证
-                    val needRole = when (firstUser.role) {
-                        "SUPERVISOR" -> "留样员"
-                        "SAMPLER" -> "监督员"
-                        else -> "另一个角色"
-                    }
-                    _uiState.value = _uiState.value.copy(
-                        authPromptMessage = "需要$needRole 认证，请重新识别"
-                    )
-                    Log.i("FridgeHome", "双人脸角色不互补: first=${firstUser.role}, second=${user.role}")
+                    Log.i("FridgeHome", "单人脸认证通过: ${user.fullName} (${user.role})")
+                    return@launch
                 }
+
+                // 双人脸模式
+                if (currentUsers.isEmpty()) {
+                    // 第一个认证
+                    val authUser = AuthUser(userId.toString(), user.fullName, user.role)
+                    currentUsers.add(authUser)
+                    val prompt = buildSingleAuthPrompt(authUser)
+                    _uiState.value = _uiState.value.copy(
+                        authUsers = currentUsers,
+                        currentUserName = user.fullName,
+                        authPromptMessage = prompt,
+                        isAuthenticated = false,
+                    )
+                    startAuthExpiryTimer()
+                    // 如果不是监督员/留样员，提示需要正确角色
+                    if (user.role != "SUPERVISOR" && user.role != "SAMPLER") {
+                        _uiState.value = _uiState.value.copy(
+                            authPromptMessage = "双人脸模式需要监督员+留样员，当前角色不符合"
+                        )
+                    }
+                    Log.i("FridgeHome", "双人脸第一认证: ${user.fullName} (${user.role})")
+                } else {
+                    // 第二个认证
+                    val firstUser = currentUsers.first()
+                    val isComplementary = (firstUser.role == "SUPERVISOR" && user.role == "SAMPLER") ||
+                            (firstUser.role == "SAMPLER" && user.role == "SUPERVISOR")
+
+                    if (isComplementary) {
+                        val authUser = AuthUser(userId.toString(), user.fullName, user.role)
+                        currentUsers.add(authUser)
+                        _uiState.value = _uiState.value.copy(
+                            isAuthenticated = true,
+                            authUsers = currentUsers,
+                            authPromptMessage = "双认证通过: ${firstUser.userName}(监督员) + ${user.fullName}(留样员)",
+                        )
+                        startAuthExpiryTimer()
+                        Log.i("FridgeHome", "双人脸认证全部通过")
+                    } else {
+                        // 角色不互补，需要重新认证
+                        val needRole = when (firstUser.role) {
+                            "SUPERVISOR" -> "留样员"
+                            "SAMPLER" -> "监督员"
+                            else -> "另一个角色"
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            authPromptMessage = "需要$needRole 认证，请重新识别"
+                        )
+                        Log.i("FridgeHome", "双人脸角色不互补: first=${firstUser.role}, second=${user.role}")
+                    }
+                }
+            } finally {
+                // isAuthenticated 已在开头立即设置，可以直接清除处理中标志
+                _uiState.value = _uiState.value.copy(isProcessingAuth = false)
+                Log.i("FridgeHome", "认证处理完成，isProcessingAuth 已清除, 最终isAuthenticated=${_uiState.value.isAuthenticated}")
             }
         }
     }
@@ -399,56 +429,72 @@ class FridgeHomeViewModel @Inject constructor(
     }
 
     fun onFaceDetectionFrame(bitmap: Bitmap) {
-        // 已认证或正在认证，忽略
-        if (_uiState.value.isAuthenticated || _uiState.value.showAuthGate) {
+        // 已认证、正在显示认证门、认证处理中、或在冷却期内，忽略
+        val state = _uiState.value
+        if (state.isAuthenticated || state.showAuthGate || state.isProcessingAuth) {
+            Log.d("FridgeHome", "忽略帧: isAuthenticated=${state.isAuthenticated}, showAuthGate=${state.showAuthGate}, isProcessingAuth=${state.isProcessingAuth}")
+            recycleBitmap(bitmap)
+            return
+        }
+        if (System.currentTimeMillis() < authGateCooldownUntil) {
             recycleBitmap(bitmap)
             return
         }
 
         viewModelScope.launch(Dispatchers.Default) {
-            try {
-                if (!faceEngine.isReady()) {
-                    Log.i("FridgeHome", "FaceEngine not ready, initializing synchronously")
-                    faceEngine.init(appContext)
-                    if (!faceEngine.isReady()) {
-                        Log.e("FridgeHome", "FaceEngine initialization failed")
+            faceDetectionMutex.withLock {
+                try {
+                    // 再次检查状态（在获取锁后可能已变化）
+                    val currentState = _uiState.value
+                    if (currentState.isAuthenticated || currentState.showAuthGate || currentState.isProcessingAuth) {
+                        Log.d("FridgeHome", "获取锁后状态已变，忽略帧")
                         recycleBitmap(bitmap)
-                        return@launch
+                        return@withLock
                     }
-                }
-                
-                val hasFace = faceEngine.detect(bitmap)
-                Log.d("FridgeHome", "人脸检测结果: hasFace=$hasFace, count=$faceDetectionCount")
 
-                if (!hasFace) {
-                    // 未检测到人脸，重置计数
+                    if (!faceEngine.isReady()) {
+                        Log.i("FridgeHome", "FaceEngine not ready, initializing synchronously")
+                        faceEngine.init(appContext)
+                        if (!faceEngine.isReady()) {
+                            Log.e("FridgeHome", "FaceEngine initialization failed")
+                            recycleBitmap(bitmap)
+                            return@withLock
+                        }
+                    }
+
+                    val hasFace = faceEngine.detect(bitmap)
+                    Log.d("FridgeHome", "人脸检测结果: hasFace=$hasFace, count=$faceDetectionCount")
+
+                    if (!hasFace) {
+                        // 未检测到人脸，重置计数
+                        faceDetectionCount = 0
+                        _uiState.value = _uiState.value.copy(faceDetectionFrames = 0)
+                        recycleBitmap(bitmap)
+                        return@withLock
+                    }
+
+                    // 检测到人脸，增加计数
+                    val now = System.currentTimeMillis()
+                    if (now - lastFaceDetectionAt > 2000) {
+                        faceDetectionCount = 0
+                    }
+                    lastFaceDetectionAt = now
+                    faceDetectionCount++
+
+                    _uiState.value = _uiState.value.copy(faceDetectionFrames = faceDetectionCount)
+                    Log.i("FridgeHome", "检测到人脸，计数=$faceDetectionCount/3")
+
+                    if (faceDetectionCount >= 3) {
+                        Log.i("FridgeHome", "连续3帧检测到人脸，自动弹出人脸识别")
+                        _uiState.value = _uiState.value.copy(showAuthGate = true)
+                        faceDetectionCount = 0
+                    }
+                } catch (e: Exception) {
+                    Log.e("FridgeHome", "人脸检测过程出错", e)
                     faceDetectionCount = 0
-                    _uiState.value = _uiState.value.copy(faceDetectionFrames = 0)
+                } finally {
                     recycleBitmap(bitmap)
-                    return@launch
                 }
-
-                // 检测到人脸，增加计数
-                val now = System.currentTimeMillis()
-                if (now - lastFaceDetectionAt > 2000) {
-                    faceDetectionCount = 0
-                }
-                lastFaceDetectionAt = now
-                faceDetectionCount++
-
-                _uiState.value = _uiState.value.copy(faceDetectionFrames = faceDetectionCount)
-                Log.i("FridgeHome", "检测到人脸，计数=$faceDetectionCount/3")
-
-                if (faceDetectionCount >= 3) {
-                    Log.i("FridgeHome", "连续3帧检测到人脸，自动弹出人脸识别")
-                    _uiState.value = _uiState.value.copy(showAuthGate = true)
-                    faceDetectionCount = 0
-                }
-            } catch (e: Exception) {
-                Log.e("FridgeHome", "人脸检测过程出错", e)
-                faceDetectionCount = 0
-            } finally {
-                recycleBitmap(bitmap)
             }
         }
     }
@@ -466,8 +512,19 @@ class FridgeHomeViewModel @Inject constructor(
     }
 
     fun onAuthDismiss() {
-        _uiState.value = _uiState.value.copy(showAuthGate = false, faceDetectionFrames = 0)
+        // 设置冷却期 + 认证处理中标志，防止从Gate返回首页后、isAuthenticated更新前的窗口期内
+        // 人脸检测再次触发重复认证（覆盖collectAsStateWithLifecycle的延迟 + onUserAuthenticated执行时间）
+        authGateCooldownUntil = System.currentTimeMillis() + 3000
+        _uiState.value = _uiState.value.copy(showAuthGate = false, faceDetectionFrames = 0, isProcessingAuth = true)
         faceDetectionCount = 0
+        // 启动15秒超时保险，防止用户从Gate手动返回后 isProcessingAuth 永远不清除
+        viewModelScope.launch {
+            delay(15_000)
+            if (_uiState.value.isProcessingAuth) {
+                _uiState.value = _uiState.value.copy(isProcessingAuth = false)
+                Log.i("FridgeHome", "认证处理超时，自动清除处理中标志")
+            }
+        }
     }
 
     fun clearPendingNavigation() {
@@ -489,6 +546,7 @@ class FridgeHomeViewModel @Inject constructor(
                 authUsers = emptyList(),
                 currentUserName = null,
                 authPromptMessage = "未认证 - 注视屏幕自动识别",
+                isProcessingAuth = false,
             )
             faceDetectionCount = 0
             authExpiryJob?.cancel()

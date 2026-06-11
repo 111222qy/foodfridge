@@ -17,7 +17,11 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        buildConfigField("String", "API_BASE_URL", "\"http://127.0.0.1:34537/\"")
+        buildConfigField("String", "API_BASE_URL", "\"https://api-v4.debug.packertec.com/\"")
+        buildConfigField("String", "SM4_KEY", "\"Z5S0FQBZHTHCHHOW\"")
+        buildConfigField("String", "SM4_IV", "\"VGSHUMIOL409QQCF\"")
+        buildConfigField("String", "APISIX_HEADER", "\"djdhJSJSHDHQK2,66556sskakjdajdj@@curls\"")
+        buildConfigField("String", "ACTIVATION_CODE", "\"TEST_ACTIVATION_CODE_001\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -128,6 +132,15 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // Network
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    // Crypto
+    implementation("org.bouncycastle:bcprov-jdk15on:1.70")
 
     // Logging
     implementation("com.jakewharton.timber:timber:5.0.1")

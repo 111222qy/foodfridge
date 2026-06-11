@@ -1,11 +1,12 @@
 package com.foodfridge.ui.scan
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,14 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,11 +28,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.foodfridge.domain.model.MealType
+import com.foodfridge.ui.theme.DarkBg
+import com.foodfridge.ui.theme.ScanFrameBg
 import kotlinx.coroutines.delay
 
 @Composable
@@ -72,139 +71,83 @@ fun BarcodeScanScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF5F8FF)),
+            .background(DarkBg)
+            .padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 顶部导航栏
-        Surface(
+        // 顶部返回按钮
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            color = Color.White,
-            shadowElevation = 2.dp,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onNavigateBack) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "返回",
-                        tint = Color(0xFF111827),
-                    )
-                }
-                Text(
-                    text = "${mealTypeEnum.displayName} - 扫描条形码",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF111827),
-                    modifier = Modifier.padding(start = 8.dp),
+            IconButton(onClick = onNavigateBack) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "返回",
+                    tint = Color.White,
                 )
             }
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "扫码",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                )
+            }
+            Spacer(modifier = Modifier.width(48.dp))
         }
 
-        Column(
+        Spacer(modifier = Modifier.weight(1f))
+        // 扫描框
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .fillMaxWidth()
+                .height(360.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(ScanFrameBg)
+                .clickable { if (!isScanning) triggerScan = true },
+            contentAlignment = Alignment.Center,
         ) {
-            Spacer(modifier = Modifier.weight(0.5f))
-
-            // 扫描区域
-            Surface(
+            // 内部扫描区域
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(280.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = Color(0xFF1F2937),
-                shadowElevation = 4.dp,
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    if (isScanning) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(48.dp),
-                                color = Color(0xFF2563EB),
-                                strokeWidth = 3.dp,
-                            )
-                            Text(
-                                text = "正在扫描...",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                    } else {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.QrCodeScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = Color(0xFF6B7280),
-                            )
-                            Text(
-                                text = "请将条形码对准摄像头",
-                                color = Color(0xFF9CA3AF),
-                                fontSize = 16.sp,
-                            )
-                            // 扫描框
-                            Surface(
-                                modifier = Modifier.size(180.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color.Transparent,
-                                border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF2563EB)),
-                            ) {}
-                        }
-                    }
-                }
-            }
-
-            // 模拟扫描按钮
-            Button(
-                onClick = { triggerScan = true },
-                enabled = !isScanning,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF2563EB),
-                    disabledContainerColor = Color(0xFFD1D5DB),
-                ),
+                    .fillMaxSize()
+                    .padding(24.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(ScanFrameBg.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center,
             ) {
                 if (isScanning) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp,
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.QrCodeScanner,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "模拟扫描",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.size(48.dp),
+                        color = Color(0xFF2563EB),
+                        strokeWidth = 3.dp,
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            // 扫描线
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(0.7f)
+                    .height(2.dp)
+                    .background(Color(0xFF2563EB)),
+            )
         }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        // 提示文字
+        Text(
+            text = "请扫码标签二维码",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color.White.copy(alpha = 0.8f),
+        )
     }
 }

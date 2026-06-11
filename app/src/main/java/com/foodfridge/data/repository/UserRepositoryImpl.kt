@@ -30,8 +30,8 @@ class UserRepositoryImpl @Inject constructor(
         return userDao.getUserByFullName(fullName)?.toDomain()
     }
 
-    override suspend fun insertUser(user: User) {
-        userDao.insertUser(user.toEntity())
+    override suspend fun insertUser(user: User): Long {
+        return userDao.insertUser(user.toEntity())
     }
 
     override suspend fun updateUser(user: User) {
@@ -57,6 +57,7 @@ class UserRepositoryImpl @Inject constructor(
             isActive = isActive,
             password = password,
             faceEmbedding = faceEmbedding,
+            facePhotoPath = facePhotoPath,
         )
     }
 
@@ -69,6 +70,7 @@ class UserRepositoryImpl @Inject constructor(
             isActive = isActive,
             password = password,
             faceEmbedding = faceEmbedding,
+            facePhotoPath = facePhotoPath,
         )
     }
 }

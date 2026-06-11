@@ -1,8 +1,9 @@
 package com.foodfridge.ui
 
-import android.os.Bundle
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,6 +28,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Timber.i("MainActivity onCreate")
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         checkAndRequestPermissions()
 
         setContent {

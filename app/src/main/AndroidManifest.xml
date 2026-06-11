@@ -12,6 +12,8 @@
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:name=".app.FoodFridgeApp"
@@ -27,6 +29,7 @@
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:keepScreenOn="true"
             android:launchMode="standard"
             android:theme="@style/Theme.FoodFridge">
             <intent-filter>

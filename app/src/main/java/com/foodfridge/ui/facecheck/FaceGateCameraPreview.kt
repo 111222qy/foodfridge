@@ -73,6 +73,7 @@ fun FaceGateCameraPreview(
     DisposableEffect(hasPermission, enabled) {
         var cameraProvider: ProcessCameraProvider? = null
         var cameraExecutor: ExecutorService? = null
+        var imageAnalysis: ImageAnalysis? = null
         var isBound = false
 
         if (hasPermission && enabled) {
@@ -87,7 +88,7 @@ fun FaceGateCameraPreview(
                         setSurfaceProvider(previewView.surfaceProvider)
                     }
 
-                val imageAnalysis = ImageAnalysis.Builder()
+                imageAnalysis = ImageAnalysis.Builder()
                     .setTargetResolution(Size(480, 360))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
@@ -113,7 +114,22 @@ fun FaceGateCameraPreview(
                 }
 
                 val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-                cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalysis)
+
+                // 尝试绑定相机，如果失败则等待1秒后重试一次
+                try {
+                    cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalysis)
+                    Log.d("FaceGateCamera", "Camera bound successfully on first attempt")
+                } catch (e: Exception) {
+                    Log.w("FaceGateCamera", "First bind attempt failed, waiting 1s and retrying", e)
+                    try {
+                        Thread.sleep(1000)
+                        cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, imageAnalysis)
+                        Log.d("FaceGateCamera", "Camera bound successfully on retry")
+                    } catch (e2: Exception) {
+                        Log.e("FaceGateCamera", "Second bind attempt also failed", e2)
+                        throw e2
+                    }
+                }
 
                 isBound = true
                 onCameraBoundChangedRef.value(true)
@@ -131,14 +147,24 @@ fun FaceGateCameraPreview(
         onDispose {
             Log.d("FaceGateCamera", "Releasing camera resources")
             try {
+                // 先清除分析器，停止接收新帧
+                imageAnalysis?.clearAnalyzer()
+                // 解绑所有用例
                 cameraProvider?.unbindAll()
-                cameraExecutor?.shutdownNow()
+                // 温和关闭线程池，等待现有任务完成
+                cameraExecutor?.shutdown()
+                val terminated = cameraExecutor?.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS) ?: true
+                if (!terminated) {
+                    Log.w("FaceGateCamera", "Executor did not terminate in 1s, forcing shutdown")
+                    cameraExecutor?.shutdownNow()
+                }
             } catch (e: Exception) {
                 Log.e("FaceGateCamera", "Error releasing camera", e)
             }
             if (isBound) {
                 onCameraBoundChangedRef.value(false)
             }
+            Log.d("FaceGateCamera", "Camera resources released")
         }
     }
 

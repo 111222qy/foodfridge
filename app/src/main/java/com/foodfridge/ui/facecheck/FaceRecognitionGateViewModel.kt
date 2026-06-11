@@ -99,6 +99,13 @@ class FaceRecognitionGateViewModel @Inject constructor(
     }
 
     private suspend fun processFrame(frame: Bitmap, isAutoScan: Boolean) {
+        // 再次检查，防止已进入队列的任务在识别成功后继续执行
+        if (isVerificationCompleted.get()) {
+            Log.d("FaceGateViewModel", "processFrame: verification already completed, discarding frame")
+            runCatching { frame.recycle() }
+            return
+        }
+
         // Ensure frame is ARGB_8888
         val snapshot = runCatching {
             if (frame.config != Bitmap.Config.ARGB_8888) {
@@ -142,6 +149,13 @@ class FaceRecognitionGateViewModel @Inject constructor(
                 return
             }
 
+            // detect 完成后再次检查，防止识别成功后继续进入 verify
+            if (isVerificationCompleted.get()) {
+                Log.d("FaceGateViewModel", "processFrame: verification completed after detect, discarding frame")
+                runCatching { snapshot.recycle() }
+                return
+            }
+
             processVerifyRequest(snapshot, isAutoScan)
         } catch (e: Exception) {
             Log.e("FaceGateViewModel", "Error processing frame", e)
@@ -150,6 +164,13 @@ class FaceRecognitionGateViewModel @Inject constructor(
     }
 
     private suspend fun processVerifyRequest(snapshot: Bitmap, isAutoScan: Boolean) {
+        // 进入识别前再次检查，防止排队任务在成功后继续执行
+        if (isVerificationCompleted.get()) {
+            Log.d("FaceGateViewModel", "processVerifyRequest: verification already completed, discarding frame")
+            runCatching { snapshot.recycle() }
+            return
+        }
+
         withContext(Dispatchers.Main) {
             _uiState.update {
                 it.copy(
@@ -173,6 +194,11 @@ class FaceRecognitionGateViewModel @Inject constructor(
 
             handleRecognitionResult(result, isAutoScan)
 
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 协程正常取消（页面离开），静默处理，不更新UI
+            Log.d("FaceGateViewModel", "Face recognition coroutine cancelled")
+            runCatching { snapshot.recycle() }
+            throw e
         } catch (e: Exception) {
             Log.e("FaceGateViewModel", "Face recognition failed", e)
             runCatching { snapshot.recycle() }
@@ -189,6 +215,12 @@ class FaceRecognitionGateViewModel @Inject constructor(
     }
 
     private suspend fun handleRecognitionResult(result: com.foodfridge.domain.face.FaceRecognitionResult?, isAutoScan: Boolean) {
+        // 防止已进入队列的任务重复处理成功结果
+        if (isVerificationCompleted.get()) {
+            Log.d("FaceGateViewModel", "handleRecognitionResult: verification already completed, ignoring result")
+            return
+        }
+
         if (result == null || result.userId == null) {
             Log.d("FaceGateViewModel", "No matching user found, raw similarity=${result?.similarity ?: 0f}")
             withContext(Dispatchers.Main) {
@@ -251,8 +283,11 @@ class FaceRecognitionGateViewModel @Inject constructor(
 
         Log.i("FaceGateViewModel", "Recognition successful: ${matched.fullName}")
 
-        // 标记验证完成，阻止后续帧处理
-        isVerificationCompleted.set(true)
+        // CAS：确保只有一个任务能进入成功处理流程，防止并发任务重复更新UI
+        if (!isVerificationCompleted.compareAndSet(false, true)) {
+            Log.d("FaceGateViewModel", "Another task already completed verification, ignoring duplicate result")
+            return
+        }
 
         userPrefs.saveAuthTokens(
             accessToken = "local_${matched.id}",
@@ -272,7 +307,7 @@ class FaceRecognitionGateViewModel @Inject constructor(
                     isRecognizing = false,
                     errorMessage = null,
                     message = "识别通过：${matched.fullName}",
-                    successToken = 1, // 固定为1，防止重复触发
+                    successToken = it.successToken + 1,
                     matchedUserId = matched.id,
                 )
             }

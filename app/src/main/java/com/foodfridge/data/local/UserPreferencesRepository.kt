@@ -43,6 +43,7 @@ class UserPreferencesRepository @Inject constructor(
         val ACCESS_TOKEN_EXPIRES_AT = longPreferencesKey("access_token_expires_at")
         val REFRESH_TOKEN_EXPIRES_AT = longPreferencesKey("refresh_token_expires_at")
         val DUAL_FACE_AUTH_ENABLED = booleanPreferencesKey("dual_face_auth_enabled")
+        val ADMIN_PASSWORD = stringPreferencesKey("admin_password")
     }
 
     @Volatile
@@ -69,6 +70,11 @@ class UserPreferencesRepository @Inject constructor(
     val dualFaceAuthEnabled: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
             preferences[DUAL_FACE_AUTH_ENABLED] ?: false
+        }
+
+    val adminPassword: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[ADMIN_PASSWORD]
         }
 
     val lastLoginPassword: Flow<String?> = context.dataStore.data
@@ -174,6 +180,16 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setDualFaceAuthEnabled(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[DUAL_FACE_AUTH_ENABLED] = enabled
+        }
+    }
+
+    suspend fun saveAdminPassword(password: String) {
+        context.dataStore.edit { preferences ->
+            if (password.isBlank()) {
+                preferences.remove(ADMIN_PASSWORD)
+            } else {
+                preferences[ADMIN_PASSWORD] = password
+            }
         }
     }
 

@@ -7,6 +7,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.foodfridge.ui.activation.DeviceActivationScreen
 import com.foodfridge.ui.facecheck.FaceRecognitionGateScreen
 import com.foodfridge.ui.home.FridgeHomeScreen
 import com.foodfridge.ui.detail.SampleDetailScreen
@@ -18,10 +19,20 @@ import com.foodfridge.ui.table.SampleTableScreen
 import kotlinx.coroutines.flow.flowOf
 
 @Composable
-fun AppNavigation(startDestination: String = Screen.Home.route) {
+fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
     val navController = rememberNavController()
 
     NavHost(navController = navController, startDestination = startDestination) {
+        composable(Screen.DeviceActivation.route) {
+            DeviceActivationScreen(
+                onActivationSuccess = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.DeviceActivation.route) { inclusive = true }
+                    }
+                },
+            )
+        }
+
         composable(Screen.Home.route) {
             val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
             val authUserIdFlow = savedStateHandle?.getStateFlow("auth_user_id", -1) ?: flowOf(-1)
@@ -32,10 +43,12 @@ fun AppNavigation(startDestination: String = Screen.Home.route) {
                 onAuthHandled = {
                     navController.currentBackStackEntry?.savedStateHandle?.set("auth_user_id", -1)
                 },
-                onNavigateToFaceRecognition = {
-                    navController.navigate(Screen.FaceRecognitionGate.route) {
-                        launchSingleTop = true
+                onNavigateToFaceRecognition = { dualEnabled, authUsers ->
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("dual_face_enabled", dualEnabled)
+                        set("existing_auth_users", ArrayList(authUsers))
                     }
+                    navController.navigate(Screen.FaceRecognitionGate.route)
                 },
                 onNavigateToDetail = { mealType, dayOffset ->
                     navController.navigate(Screen.SampleDetail.createRoute(mealType, dayOffset)) {
@@ -61,6 +74,12 @@ fun AppNavigation(startDestination: String = Screen.Home.route) {
         }
 
         composable(Screen.FaceRecognitionGate.route) {
+            val dualEnabled = navController.previousBackStackEntry
+                ?.savedStateHandle?.get<Boolean>("dual_face_enabled") ?: false
+            val authUsers = navController.previousBackStackEntry
+                ?.savedStateHandle?.get<java.util.ArrayList<com.foodfridge.ui.home.AuthUser>>("existing_auth_users")
+                ?: emptyList()
+
             FaceRecognitionGateScreen(
                 onVerified = { matchedUserId ->
                     navController.previousBackStackEntry
@@ -69,6 +88,8 @@ fun AppNavigation(startDestination: String = Screen.Home.route) {
                     navController.popBackStack()
                 },
                 onBack = { navController.popBackStack() },
+                dualFaceAuthEnabled = dualEnabled,
+                existingAuthUsers = authUsers,
             )
         }
 
@@ -81,6 +102,11 @@ fun AppNavigation(startDestination: String = Screen.Home.route) {
                 mealType = mealType,
                 dayOffset = dayOffset,
                 onNavigateBack = { navController.popBackStack() },
+                onNavigateToBarcodeScan = {
+                    navController.navigate(Screen.BarcodeScan.createRoute(mealType, dayOffset)) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 

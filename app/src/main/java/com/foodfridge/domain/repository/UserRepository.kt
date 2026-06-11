@@ -12,7 +12,7 @@ interface UserRepository {
 
     suspend fun getUserByFullName(fullName: String): User?
 
-    suspend fun insertUser(user: User)
+    suspend fun insertUser(user: User): Long
     
     suspend fun updateUser(user: User)
     

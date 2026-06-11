@@ -89,6 +89,45 @@ class SeetaFaceEngine @Inject constructor(
         }
     }
 
+    override fun detectAndCropFace(bitmap: Bitmap): Bitmap? {
+        if (!isInitialized.get()) {
+            Log.d("SeetaFaceEngine", "detectAndCropFace called but not initialized, starting async init")
+            startAsyncInit(appContext)
+            return null
+        }
+
+        if (bitmap.isRecycled) {
+            Log.w("SeetaFaceEngine", "detectAndCropFace called with recycled bitmap")
+            return null
+        }
+
+        return try {
+            val faces = synchronized(nativeLock) {
+                FaceSdk.detect(bitmap)
+            }
+            if (faces.isEmpty()) {
+                Log.d("SeetaFaceEngine", "detectAndCropFace: no face detected")
+                return null
+            }
+
+            val bestFace = faces.maxByOrNull { it.score }
+            val bbox = bestFace?.box?.let {
+                Rect(it.left.toInt(), it.top.toInt(), it.right.toInt(), it.bottom.toInt())
+            } ?: Rect()
+
+            if (bbox.isEmpty) {
+                Log.w("SeetaFaceEngine", "detectAndCropFace: empty bounding box")
+                return null
+            }
+
+            Log.d("SeetaFaceEngine", "detectAndCropFace: best face score=${bestFace?.score}, bbox=$bbox")
+            cropFaceBitmap(bitmap, bbox)
+        } catch (e: Exception) {
+            Log.e("SeetaFaceEngine", "detectAndCropFace failed", e)
+            null
+        }
+    }
+
     override fun init(context: Context) {
         refCount.incrementAndGet()
         ensureInit(context, "sync")

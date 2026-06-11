@@ -1,6 +1,7 @@
 package com.foodfridge.ui.navigation
 
 sealed class Screen(val route: String) {
+    object DeviceActivation : Screen("device_activation")
     object FaceRecognitionGate : Screen("face_recognition_gate")
     object Home : Screen("home")
     object SampleDetail : Screen("sample_detail/{mealType}/{dayOffset}") {
