@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.foodfridge.data.camera.CameraCoordinator
 import com.foodfridge.ui.home.AuthUser
 import com.foodfridge.ui.theme.DarkBg
 import com.foodfridge.ui.theme.DarkCard
@@ -47,11 +48,11 @@ fun FaceRecognitionGateScreen(
     onBack: () -> Unit,
     dualFaceAuthEnabled: Boolean = false,
     existingAuthUsers: List<AuthUser> = emptyList(),
+    cameraCoordinator: CameraCoordinator? = null,
     viewModel: FaceRecognitionGateViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var cameraBindError by remember { mutableStateOf<String?>(null) }
-    var isCameraBound by remember { mutableStateOf(false) }
     val cameraEnabled = uiState.successToken <= 0
     var isNavigating by remember { mutableStateOf(false) }
 
@@ -65,6 +66,7 @@ fun FaceRecognitionGateScreen(
             Log.d("FaceRecognition", "Auto-return starting, matchedUserId=${uiState.matchedUserId}")
             delay(420)
             Log.d("FaceRecognition", "Calling onVerified with userId=${uiState.matchedUserId ?: 0}")
+            // 摄像头释放统一交给 FaceGateCameraPreview.DisposableEffect.onDispose 处理
             onVerified(uiState.matchedUserId ?: 0)
         } else {
             Log.d("FaceRecognition", "Auto-return skipped: isSuccess=$isSuccess, isNavigating=$isNavigating")
@@ -87,21 +89,19 @@ fun FaceRecognitionGateScreen(
         }
     }
 
-    val onCameraBoundChangedCallback = remember {
-        { bound: Boolean ->
-            isCameraBound = bound
-            Log.d("FaceRecognition", "Camera bound: $bound")
-            Unit
-        }
-    }
-
     // 拦截系统返回键，防止识别过程中返回导致状态混乱
     BackHandler(enabled = !isNavigating) {
         if (!isNavigating) {
             isNavigating = true
+            // 摄像头释放统一交给 FaceGateCameraPreview.DisposableEffect.onDispose 处理
             onBack()
         }
     }
+
+    // 页面进入时获取摄像头使用权，离开时释放
+//    LaunchedEffect(Unit) {
+//        cameraCoordinator?.acquire(CameraCoordinator.CameraPurpose.FACE_RECOGNITION)
+//    }
 
     Column(
         modifier = Modifier
@@ -143,8 +143,9 @@ fun FaceRecognitionGateScreen(
             FaceGateCameraPreview(
                 onFrame = onFrameCallback,
                 onCameraError = onCameraErrorCallback,
-                onCameraBoundChanged = onCameraBoundChangedCallback,
+                onCameraBoundChanged = {},
                 enabled = cameraEnabled,
+                cameraCoordinator = cameraCoordinator,
                 modifier = Modifier.fillMaxSize(),
             )
 

@@ -1,5 +1,6 @@
 package com.foodfridge.ui.home
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -48,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.foodfridge.data.camera.CameraCoordinator
 import com.foodfridge.domain.model.MealType
 import com.foodfridge.domain.model.SampleStatus
 import com.foodfridge.ui.facecheck.FaceGateCameraPreview
@@ -77,6 +80,7 @@ fun FridgeHomeScreen(
     onNavigateToAddSample: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToBarcodeScan: (String, Int) -> Unit,
+    cameraCoordinator: CameraCoordinator? = null,
     viewModel: FridgeHomeViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -98,6 +102,19 @@ fun FridgeHomeScreen(
     // 人脸检测自动触发人脸识别
     LaunchedEffect(uiState.showAuthGate) {
         if (uiState.showAuthGate) {
+            // 等待 CameraCoordinator 确认首页相机已释放，避免与 Gate 页面抢摄像头
+            var waitCount = 0
+            while (
+                cameraCoordinator?.getCurrentPurpose() != CameraCoordinator.CameraPurpose.IDLE &&
+                waitCount < 50
+            ) {
+                delay(100)
+                waitCount++
+            }
+            if (waitCount >= 50) {
+                Log.w("FridgeHome", "等待相机释放超时，强制继续")
+                cameraCoordinator?.forceRelease()
+            }
             onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
             viewModel.onAuthDismiss()
         }
@@ -174,7 +191,9 @@ fun FridgeHomeScreen(
         }
 
         // 隐藏的相机预览（用于人脸检测，1x1dp 完全不可见）
-        if (!uiState.isAuthenticated && !uiState.showAuthGate && !uiState.isProcessingAuth) {
+        val isBarcodeScanActive = cameraCoordinator?.getCurrentPurpose() == CameraCoordinator.CameraPurpose.BARCODE_SCAN
+        val shouldShowHiddenCamera = !uiState.isAuthenticated && !uiState.showAuthGate && !uiState.isProcessingAuth && !isBarcodeScanActive
+        if (shouldShowHiddenCamera) {
             Box(
                 modifier = Modifier.size(1.dp),
             ) {
@@ -185,6 +204,7 @@ fun FridgeHomeScreen(
                     onCameraError = {},
                     onCameraBoundChanged = {},
                     enabled = true,
+                    cameraCoordinator = cameraCoordinator,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -223,8 +243,7 @@ fun FridgeHomeScreen(
                 },
                 onAuthRequired = {
                     Toast.makeText(context, "请先认证", Toast.LENGTH_SHORT).show()
-                    viewModel.onAuthDismiss()
-                    onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
+                    viewModel.openAuthGate()
                 },
                 modifier = Modifier.weight(1f),
             )
@@ -238,8 +257,7 @@ fun FridgeHomeScreen(
                 },
                 onAuthRequired = {
                     Toast.makeText(context, "请先认证", Toast.LENGTH_SHORT).show()
-                    viewModel.onAuthDismiss()
-                    onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
+                    viewModel.openAuthGate()
                 },
                 modifier = Modifier.weight(1f),
             )
@@ -253,8 +271,7 @@ fun FridgeHomeScreen(
                 },
                 onAuthRequired = {
                     Toast.makeText(context, "请先认证", Toast.LENGTH_SHORT).show()
-                    viewModel.onAuthDismiss()
-                    onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
+                    viewModel.openAuthGate()
                 },
                 modifier = Modifier.weight(1f),
             )
@@ -263,12 +280,20 @@ fun FridgeHomeScreen(
 }
 
 @Composable
-private fun TemperatureCircle(temperature: Float, isTemperatureAlarm: Boolean) {
+private fun TemperatureCircle(temperature: Float?, isTemperatureAlarm: Boolean) {
     val gradientColors = if (isTemperatureAlarm) {
         listOf(TempAlarmStart, TempAlarmEnd)
     } else {
         listOf(TempCircleGradientStart, TempCircleGradientEnd)
     }
+
+    val tempText = when {
+        temperature == null -> "--"
+        temperature <= -100f || temperature >= 100f -> "异常"
+        else -> "%.1f".format(temperature)
+    }
+    val unitText = if (temperature == null) "" else "°C"
+    val labelText = if (temperature == null) "温度获取中..." else "冰箱温度"
 
     BoxWithConstraints(
         modifier = Modifier
@@ -297,14 +322,14 @@ private fun TemperatureCircle(temperature: Float, isTemperatureAlarm: Boolean) {
             ) {
                 Row(verticalAlignment = Alignment.Top) {
                     Text(
-                        text = "${temperature.toInt()}",
+                        text = tempText,
                         fontSize = tempFontSize,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
                         lineHeight = tempFontSize,
                     )
                     Text(
-                        text = "°C",
+                        text = unitText,
                         fontSize = unitFontSize,
                         fontWeight = FontWeight.Medium,
                         color = Color.White.copy(alpha = 0.9f),
@@ -312,7 +337,7 @@ private fun TemperatureCircle(temperature: Float, isTemperatureAlarm: Boolean) {
                     )
                 }
                 Text(
-                    text = "冰箱温度",
+                    text = labelText,
                     fontSize = labelFontSize,
                     color = Color.White.copy(alpha = 0.8f),
                 )

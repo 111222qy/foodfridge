@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,6 +34,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,10 +43,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.camera.core.CameraSelector
+import com.foodfridge.data.camera.CameraCoordinator
 import com.foodfridge.domain.scan.BarcodeDecoder
 import com.foodfridge.domain.scan.BarcodePayload
 import com.foodfridge.ui.theme.DarkBg
 import kotlinx.coroutines.delay
+import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -53,6 +59,8 @@ fun BarcodeScanScreen(
     dayOffset: Int,
     onNavigateBack: () -> Unit,
     onScanComplete: (String, BarcodePayload) -> Unit,
+    cameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+    cameraCoordinator: CameraCoordinator? = null,
 ) {
     @Suppress("UNUSED_PARAMETER")
     val _mealType = mealType
@@ -60,6 +68,12 @@ fun BarcodeScanScreen(
     val _dayOffset = dayOffset
 
     var scanState by remember { mutableStateOf<ScanState>(ScanState.Scanning) }
+    var scanKey by remember { mutableStateOf(0) }
+
+    val resetScanning = {
+        scanKey++
+        scanState = ScanState.Scanning
+    }
 
     LaunchedEffect(scanState) {
         when (scanState) {
@@ -100,7 +114,7 @@ fun BarcodeScanScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "扫码",
+                    text = "扫描条形码",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
@@ -114,17 +128,29 @@ fun BarcodeScanScreen(
         // 扫描框（相机预览）- 提取为独立 composable 避免 ColumnScope 冲突
         ScanFrame(
             scanState = scanState,
+            scanKey = scanKey,
             onBarcodeDetected = { rawValue ->
+                Timber.i("Raw barcode detected: $rawValue")
                 val payload = BarcodeDecoder.decode(rawValue)
                 if (payload != null) {
                     scanState = ScanState.Success(rawValue, payload)
                 } else {
-                    scanState = ScanState.Error("无法识别的条码")
+                    val message = if (rawValue.startsWith("${BarcodeDecoder.MAGIC}|")) {
+                        "条码格式错误，请检查小票"
+                    } else {
+                        "检测到非留样条码：$rawValue"
+                    }
+                    scanState = ScanState.Error(message)
                 }
             },
             onCameraError = { error ->
-                scanState = ScanState.Error(error ?: "摄像头错误")
+                if (error != null) {
+                    scanState = ScanState.Error(error)
+                }
             },
+            onRescan = resetScanning,
+            cameraSelector = cameraSelector,
+            cameraCoordinator = cameraCoordinator,
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -133,7 +159,7 @@ fun BarcodeScanScreen(
         when (scanState) {
             is ScanState.Scanning -> {
                 Text(
-                    text = "请对准留样小票上的二维码",
+                    text = "请对准留样小票上的条形码\n（保持 10-15 厘米距离，避免反光）",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = Color.White.copy(alpha = 0.8f),
@@ -257,7 +283,7 @@ private fun ScanCornerMarks() {
 }
 
 @Composable
-private fun SuccessOverlay(payload: BarcodePayload) {
+private fun SuccessOverlay(payload: BarcodePayload, onRescan: () -> Unit) {
     val timeStr = remember(payload.timestamp) {
         SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
             .format(java.util.Date(payload.timestamp))
@@ -303,13 +329,25 @@ private fun SuccessOverlay(payload: BarcodePayload) {
                     fontSize = 13.sp,
                     color = Color(0xFF6B7280),
                 )
+                androidx.compose.material3.TextButton(
+                    onClick = onRescan,
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("重新扫描", fontSize = 14.sp)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ErrorOverlay(message: String) {
+private fun ErrorOverlay(message: String, onRescan: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -344,6 +382,18 @@ private fun ErrorOverlay(message: String) {
                     fontSize = 13.sp,
                     color = Color(0xFF6B7280),
                 )
+                androidx.compose.material3.TextButton(
+                    onClick = onRescan,
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("重新扫描", fontSize = 14.sp)
+                }
             }
         }
     }
@@ -352,9 +402,28 @@ private fun ErrorOverlay(message: String) {
 @Composable
 private fun ScanFrame(
     scanState: ScanState,
+    scanKey: Int,
     onBarcodeDetected: (String) -> Unit,
     onCameraError: (String?) -> Unit,
+    onRescan: () -> Unit,
+    cameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+    cameraCoordinator: CameraCoordinator? = null,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var hasPermission by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.CAMERA
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasPermission = granted
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -363,39 +432,76 @@ private fun ScanFrame(
             .background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
-        // 相机预览
-        if (scanState == ScanState.Scanning) {
-            BarcodeCameraPreview(
-                onBarcodeDetected = onBarcodeDetected,
-                onCameraError = onCameraError,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+        when {
+            // 相机预览：有权限时始终保留，避免 Success/Error 覆盖层下黑屏或反复释放摄像头
+            hasPermission -> {
+                BarcodeCameraPreview(
+                    onBarcodeDetected = onBarcodeDetected,
+                    onCameraError = onCameraError,
+                    cameraSelector = cameraSelector,
+                    cameraCoordinator = cameraCoordinator,
+                    scanKey = scanKey,
+                    modifier = Modifier.fillMaxSize(),
+                )
 
-        // 扫描框边框
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Transparent),
-        ) {
-            ScanCornerMarks()
-        }
+                if (scanState == ScanState.Scanning) {
+                    // 扫描框边框
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.Transparent),
+                    ) {
+                        ScanCornerMarks()
+                    }
 
-        // 扫描线动画（仅在扫描中时显示）
-        AnimatedVisibility(
-            visible = scanState == ScanState.Scanning,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth(0.75f)
-                    .height(2.dp)
-                    .background(Color(0xFF2563EB)),
-            )
+                    // 扫描线动画
+                    AnimatedVisibility(
+                        visible = scanState == ScanState.Scanning,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .fillMaxWidth(0.75f)
+                                .height(2.dp)
+                                .background(Color(0xFF2563EB)),
+                        )
+                    }
+                }
+            }
+
+            // 权限请求提示
+            !hasPermission -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.padding(24.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoCamera,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.6f),
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Text(
+                        text = "需要相机权限以扫描条形码",
+                        fontSize = 14.sp,
+                        color = Color.White.copy(alpha = 0.8f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                    androidx.compose.material3.Button(
+                        onClick = { permissionLauncher.launch(android.Manifest.permission.CAMERA) },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2563EB),
+                        ),
+                    ) {
+                        Text("授权相机权限")
+                    }
+                }
+            }
         }
 
         // 扫描成功覆盖层
@@ -406,7 +512,10 @@ private fun ScanFrame(
         ) {
             val success = scanState as? ScanState.Success
             if (success != null) {
-                SuccessOverlay(payload = success.payload)
+                SuccessOverlay(
+                    payload = success.payload,
+                    onRescan = onRescan,
+                )
             }
         }
 
@@ -418,7 +527,10 @@ private fun ScanFrame(
         ) {
             val error = scanState as? ScanState.Error
             if (error != null) {
-                ErrorOverlay(message = error.message)
+                ErrorOverlay(
+                    message = error.message,
+                    onRescan = onRescan,
+                )
             }
         }
     }

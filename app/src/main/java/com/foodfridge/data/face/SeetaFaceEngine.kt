@@ -27,6 +27,18 @@ import kotlin.math.min
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * SeetaFace 检测到的人脸详细信息，用于首页“注视屏幕”判断。
+ */
+data class FaceDetectionDetail(
+    val score: Float,
+    val centerX: Float,
+    val centerY: Float,
+    val boxAreaRatio: Float,
+    val width: Int,
+    val height: Int,
+)
+
 @Singleton
 class SeetaFaceEngine @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -89,6 +101,59 @@ class SeetaFaceEngine @Inject constructor(
         }
     }
 
+    override fun detectDetails(bitmap: Bitmap): FaceDetectionDetail? {
+        if (!isInitialized.get()) {
+            Log.d("SeetaFaceEngine", "detectDetails called but not initialized, starting async init")
+            startAsyncInit(appContext)
+            return null
+        }
+
+        if (bitmap.isRecycled) {
+            Log.w("SeetaFaceEngine", "detectDetails called with recycled bitmap")
+            return null
+        }
+
+        return try {
+            val faces = synchronized(nativeLock) {
+                FaceSdk.detect(bitmap)
+            }
+            if (faces.isEmpty()) {
+                Log.d("SeetaFaceEngine", "detectDetails: no face detected")
+                return null
+            }
+
+            val bestFace = faces.maxByOrNull { it.score } ?: return null
+            val box = bestFace.box
+            val boxWidth = box.right - box.left
+            val boxHeight = box.bottom - box.top
+            if (boxWidth <= 0 || boxHeight <= 0) {
+                Log.w("SeetaFaceEngine", "detectDetails: empty bounding box")
+                return null
+            }
+
+            val boxArea = boxWidth * boxHeight
+            val imageArea = bitmap.width * bitmap.height
+            val ratio = if (imageArea > 0) boxArea / imageArea.toFloat() else 0f
+
+            Log.d(
+                "SeetaFaceEngine",
+                "detectDetails: score=${bestFace.score}, box=${boxWidth}x${boxHeight}, ratio=$ratio"
+            )
+
+            FaceDetectionDetail(
+                score = bestFace.score,
+                centerX = (box.left + box.right) / 2f,
+                centerY = (box.top + box.bottom) / 2f,
+                boxAreaRatio = ratio,
+                width = boxWidth.toInt(),
+                height = boxHeight.toInt(),
+            )
+        } catch (e: Exception) {
+            Log.e("SeetaFaceEngine", "detectDetails failed", e)
+            null
+        }
+    }
+
     override fun detectAndCropFace(bitmap: Bitmap): Bitmap? {
         if (!isInitialized.get()) {
             Log.d("SeetaFaceEngine", "detectAndCropFace called but not initialized, starting async init")
@@ -131,6 +196,10 @@ class SeetaFaceEngine @Inject constructor(
     override fun init(context: Context) {
         refCount.incrementAndGet()
         ensureInit(context, "sync")
+        if (!isInitialized.get()) {
+            // 初始化失败时回退 refCount，避免泄漏
+            refCount.decrementAndGet()
+        }
     }
 
     private fun startAsyncInit(context: Context) {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.foodfridge.data.hardware.HardwareManager
 import com.foodfridge.data.local.UserPreferencesRepository
 import com.foodfridge.domain.face.FaceEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -42,8 +43,18 @@ data class AuthUser(
     val role: String,
 ) : java.io.Serializable
 
+/**
+ * 首页人脸检测会话状态，用于判断“是否稳定注视屏幕”。
+ */
+private data class FaceDetectionSession(
+    val consecutiveFrames: Int = 0,
+    val lastCenterX: Float = 0f,
+    val lastCenterY: Float = 0f,
+    val lastTimestamp: Long = 0L,
+)
+
 data class FridgeHomeUiState(
-    val temperature: Float = 4.0f,
+    val temperature: Float? = null,
     val isTemperatureAlarm: Boolean = false,
     val day1Cards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 0) },
     val day2Cards: List<MealCardState> = MealType.entries.map { MealCardState(it, SampleStatus.WAITING, 1) },
@@ -68,6 +79,7 @@ class FridgeHomeViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val userRepository: UserRepository,
     private val faceEngine: FaceEngine,
+    private val hardwareManager: HardwareManager,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -77,10 +89,10 @@ class FridgeHomeViewModel @Inject constructor(
     private var temperatureJob: Job? = null
     private var expiryCheckJob: Job? = null
     private var authExpiryJob: Job? = null
-    private var faceDetectionCount = 0
-    private var lastFaceDetectionAt = 0L
+    private var detectionSession = FaceDetectionSession()
     private val faceDetectionMutex = Mutex()
     private val viewModelCreatedAt = System.currentTimeMillis()
+    private var lastFaceDebugLogAt = 0L
     // 认证门关闭后的冷却时间戳，防止从Gate返回后立即被首页人脸检测重新触发
     private var authGateCooldownUntil = 0L
 
@@ -94,17 +106,30 @@ class FridgeHomeViewModel @Inject constructor(
 
     companion object {
         private const val DAY_MILLIS = 24L * 60 * 60 * 1000
+        private const val FACE_DETECTION_INTERVAL_MS = 150L
+        private const val FACE_DETECTION_TIMEOUT_MS = 2000L
+        private const val AUTH_TIMEOUT_MS = 120_000L // 认证有效期 2 分钟
+        // 0.5~0.8m 正视时 ratio 约 0.03~0.05，降到 0.03 让正常距离更容易触发；
+        // 同时放宽分数、稳定度和连续帧要求，并在计数上采用“扣分”而非清零。
+        private const val FACE_MIN_BOX_RATIO = 0.03f
+        private const val FACE_MIN_SCORE = 0.60f
+        private const val FACE_STABLE_THRESHOLD_PX = 50f
+        private const val REQUIRED_CONSECUTIVE_FRAMES = 3
     }
 
     init {
         viewModelScope.launch(Dispatchers.Default) {
             Log.i("FridgeHome", "正在初始化FaceEngine...")
             faceEngine.init(appContext)
-            Log.i("FridgeHome", "FaceEngine初始化完成")
+            if (faceEngine.isReady()) {
+                Log.i("FridgeHome", "FaceEngine初始化完成")
+            } else {
+                Log.e("FridgeHome", "FaceEngine初始化失败，人脸检测可能无法工作")
+            }
         }
         loadAuthConfig()
         loadUserAuthState()
-        startTemperatureSimulation()
+        startTemperatureMonitoring()
         startExpiryCheck()
         loadMealStates()
     }
@@ -161,15 +186,18 @@ class FridgeHomeViewModel @Inject constructor(
     private fun startAuthExpiryTimer() {
         authExpiryJob?.cancel()
         authExpiryJob = viewModelScope.launch {
-            delay(60_000) // 认证有效期1分钟
+            Log.i("FridgeHome", "认证有效期2分钟，启动过期计时器")
+            delay(AUTH_TIMEOUT_MS) // 认证有效期2分钟
             userPreferencesRepository.clearSession()
+            hardwareManager.lockDoor()
+            hardwareManager.lightOff()
             _uiState.value = _uiState.value.copy(
                 isAuthenticated = false,
                 authUsers = emptyList(),
                 currentUserName = null,
                 authPromptMessage = "未认证 - 注视屏幕自动识别",
             )
-            faceDetectionCount = 0
+            detectionSession = FaceDetectionSession()
             Log.i("FridgeHome", "认证已过期，自动退出登录")
         }
     }
@@ -192,16 +220,18 @@ class FridgeHomeViewModel @Inject constructor(
                 return@launch
             }
 
-            // 先立即标记为已认证，阻止相机检测（即使后续验证失败也会回滚）
-            _uiState.value = _uiState.value.copy(isAuthenticated = true)
-            try {
-                val user = userRepository.getUserById(userId)
-                if (user == null || !user.isActive) {
-                    Log.w("FridgeHome", "认证用户不存在或已停用: $userId")
-                    _uiState.value = _uiState.value.copy(isAuthenticated = false)
-                    return@launch
-                }
+            // 先查询用户，确认有效后再设置 isAuthenticated，避免竞态窗口
+            val user = userRepository.getUserById(userId)
+            if (user == null || !user.isActive) {
+                Log.w("FridgeHome", "认证用户不存在或已停用: $userId")
+                _uiState.value = _uiState.value.copy(isProcessingAuth = false)
+                return@launch
+            }
 
+            // 用户有效，现在设置 isAuthenticated
+            _uiState.value = _uiState.value.copy(isAuthenticated = true)
+
+            try {
                 // 使用 UI state 中的 dualFaceAuthEnabled，避免 DataStore 异步读取延迟/不一致
                 val dualEnabled = _uiState.value.dualFaceAuthEnabled
                 Log.d("FridgeHome", "使用 UI state 的 dualFaceAuthEnabled=$dualEnabled")
@@ -222,6 +252,8 @@ class FridgeHomeViewModel @Inject constructor(
                         currentUserName = user.fullName,
                         authPromptMessage = "已认证: ${user.fullName}",
                     )
+                    hardwareManager.unlockDoor()
+                    hardwareManager.lightOn()
                     startAuthExpiryTimer()
                     Log.i("FridgeHome", "单人脸认证通过: ${user.fullName} (${user.role})")
                     return@launch
@@ -261,6 +293,8 @@ class FridgeHomeViewModel @Inject constructor(
                             authUsers = currentUsers,
                             authPromptMessage = "双认证通过: ${firstUser.userName}(监督员) + ${user.fullName}(留样员)",
                         )
+                        hardwareManager.unlockDoor()
+                        hardwareManager.lightOn()
                         startAuthExpiryTimer()
                         Log.i("FridgeHome", "双人脸认证全部通过")
                     } else {
@@ -376,22 +410,26 @@ class FridgeHomeViewModel @Inject constructor(
         loadMealStates()
     }
 
-    private fun startTemperatureSimulation() {
+    private fun startTemperatureMonitoring() {
+        // 启动硬件传感器温度读取（含回调+定时轮询）
+        hardwareManager.startTemperatureReading()
+
+        // 收集硬件温度数据并更新 UI
         temperatureJob = viewModelScope.launch {
-            while (isActive) {
-                val temp = (40 + kotlin.random.Random.nextInt(0, 90)) / 10f
-                temperatureRepository.insertTemperature(
-                    com.foodfridge.domain.model.TemperatureRecord(
-                        id = 0,
-                        temperature = temp,
-                        recordedAt = System.currentTimeMillis()
+            hardwareManager.temperature.collect { temp ->
+                if (temp != null) {
+                    temperatureRepository.insertTemperature(
+                        com.foodfridge.domain.model.TemperatureRecord(
+                            id = 0,
+                            temperature = temp,
+                            recordedAt = System.currentTimeMillis()
+                        )
                     )
-                )
-                _uiState.value = _uiState.value.copy(
-                    temperature = temp,
-                    isTemperatureAlarm = temp > 8.0f
-                )
-                delay(30_000)
+                    _uiState.value = _uiState.value.copy(
+                        temperature = temp,
+                        isTemperatureAlarm = temp > 8.0f
+                    )
+                }
             }
         }
     }
@@ -432,11 +470,17 @@ class FridgeHomeViewModel @Inject constructor(
         // 已认证、正在显示认证门、认证处理中、或在冷却期内，忽略
         val state = _uiState.value
         if (state.isAuthenticated || state.showAuthGate || state.isProcessingAuth) {
-            Log.d("FridgeHome", "忽略帧: isAuthenticated=${state.isAuthenticated}, showAuthGate=${state.showAuthGate}, isProcessingAuth=${state.isProcessingAuth}")
             recycleBitmap(bitmap)
             return
         }
         if (System.currentTimeMillis() < authGateCooldownUntil) {
+            recycleBitmap(bitmap)
+            return
+        }
+
+        // 限制帧率：两帧之间至少间隔 200ms
+        val now = System.currentTimeMillis()
+        if (now - detectionSession.lastTimestamp < FACE_DETECTION_INTERVAL_MS) {
             recycleBitmap(bitmap)
             return
         }
@@ -447,51 +491,106 @@ class FridgeHomeViewModel @Inject constructor(
                     // 再次检查状态（在获取锁后可能已变化）
                     val currentState = _uiState.value
                     if (currentState.isAuthenticated || currentState.showAuthGate || currentState.isProcessingAuth) {
-                        Log.d("FridgeHome", "获取锁后状态已变，忽略帧")
+                        recycleBitmap(bitmap)
+                        return@withLock
+                    }
+                    if (System.currentTimeMillis() < authGateCooldownUntil) {
                         recycleBitmap(bitmap)
                         return@withLock
                     }
 
                     if (!faceEngine.isReady()) {
-                        Log.i("FridgeHome", "FaceEngine not ready, initializing synchronously")
-                        faceEngine.init(appContext)
-                        if (!faceEngine.isReady()) {
-                            Log.e("FridgeHome", "FaceEngine initialization failed")
-                            recycleBitmap(bitmap)
-                            return@withLock
-                        }
+                        recycleBitmap(bitmap)
+                        return@withLock
                     }
 
-                    val hasFace = faceEngine.detect(bitmap)
-                    Log.d("FridgeHome", "人脸检测结果: hasFace=$hasFace, count=$faceDetectionCount")
+                    // 超时重置会话
+                    if (now - detectionSession.lastTimestamp > FACE_DETECTION_TIMEOUT_MS) {
+                        detectionSession = FaceDetectionSession()
+                    }
 
-                    if (!hasFace) {
-                        // 未检测到人脸，重置计数
-                        faceDetectionCount = 0
+                    val faceDetail = faceEngine.detectDetails(bitmap)
+                    if (faceDetail == null) {
+                        detectionSession = FaceDetectionSession()
                         _uiState.value = _uiState.value.copy(faceDetectionFrames = 0)
                         recycleBitmap(bitmap)
                         return@withLock
                     }
 
-                    // 检测到人脸，增加计数
-                    val now = System.currentTimeMillis()
-                    if (now - lastFaceDetectionAt > 2000) {
-                        faceDetectionCount = 0
+                    // 质量过滤（单次不佳只扣分，不全部清零）
+                    if (faceDetail.score < FACE_MIN_SCORE) {
+                        Log.d("FridgeHome", "人脸质量不足: score=${faceDetail.score} < $FACE_MIN_SCORE")
+                        val decremented = maxOf(0, detectionSession.consecutiveFrames - 1)
+                        detectionSession = detectionSession.copy(
+                            consecutiveFrames = decremented,
+                            lastTimestamp = now,
+                        )
+                        _uiState.value = _uiState.value.copy(faceDetectionFrames = decremented)
+                        recycleBitmap(bitmap)
+                        return@withLock
                     }
-                    lastFaceDetectionAt = now
-                    faceDetectionCount++
+                    if (faceDetail.boxAreaRatio < FACE_MIN_BOX_RATIO) {
+                        Log.d("FridgeHome", "人脸距离过远/过小: ratio=${faceDetail.boxAreaRatio} < $FACE_MIN_BOX_RATIO")
+                        val decremented = maxOf(0, detectionSession.consecutiveFrames - 1)
+                        detectionSession = detectionSession.copy(
+                            consecutiveFrames = decremented,
+                            lastTimestamp = now,
+                        )
+                        _uiState.value = _uiState.value.copy(faceDetectionFrames = decremented)
+                        recycleBitmap(bitmap)
+                        return@withLock
+                    }
 
-                    _uiState.value = _uiState.value.copy(faceDetectionFrames = faceDetectionCount)
-                    Log.i("FridgeHome", "检测到人脸，计数=$faceDetectionCount/3")
+                    // 稳定性过滤
+                    val isStable = if (detectionSession.consecutiveFrames > 0) {
+                        val dx = kotlin.math.abs(faceDetail.centerX - detectionSession.lastCenterX)
+                        val dy = kotlin.math.abs(faceDetail.centerY - detectionSession.lastCenterY)
+                        dx < FACE_STABLE_THRESHOLD_PX && dy < FACE_STABLE_THRESHOLD_PX
+                    } else {
+                        true
+                    }
 
-                    if (faceDetectionCount >= 3) {
-                        Log.i("FridgeHome", "连续3帧检测到人脸，自动弹出人脸识别")
+                    if (!isStable) {
+                        Log.d("FridgeHome", "人脸位置不稳定，暂停计数")
+                        detectionSession = detectionSession.copy(
+                            lastCenterX = faceDetail.centerX,
+                            lastCenterY = faceDetail.centerY,
+                            lastTimestamp = now,
+                        )
+                        recycleBitmap(bitmap)
+                        return@withLock
+                    }
+
+                    val newConsecutive = detectionSession.consecutiveFrames + 1
+                    detectionSession = FaceDetectionSession(
+                        consecutiveFrames = newConsecutive,
+                        lastCenterX = faceDetail.centerX,
+                        lastCenterY = faceDetail.centerY,
+                        lastTimestamp = now,
+                    )
+                    _uiState.value = _uiState.value.copy(faceDetectionFrames = newConsecutive)
+                    Log.i(
+                        "FridgeHome",
+                        "稳定人脸检测: 计数=$newConsecutive/$REQUIRED_CONSECUTIVE_FRAMES, score=${faceDetail.score}, ratio=${faceDetail.boxAreaRatio}"
+                    )
+
+                    // 周期性调试日志，便于现场确认阈值
+                    if (now - lastFaceDebugLogAt >= 1000) {
+                        lastFaceDebugLogAt = now
+                        Log.i(
+                            "FridgeHome",
+                            "人脸调试: score=${faceDetail.score}, ratio=${faceDetail.boxAreaRatio}, center=(${faceDetail.centerX},${faceDetail.centerY}), consecutive=$newConsecutive"
+                        )
+                    }
+
+                    if (newConsecutive >= REQUIRED_CONSECUTIVE_FRAMES) {
+                        Log.i("FridgeHome", "连续${REQUIRED_CONSECUTIVE_FRAMES}帧检测到稳定人脸，触发认证")
                         _uiState.value = _uiState.value.copy(showAuthGate = true)
-                        faceDetectionCount = 0
+                        detectionSession = FaceDetectionSession()
                     }
                 } catch (e: Exception) {
                     Log.e("FridgeHome", "人脸检测过程出错", e)
-                    faceDetectionCount = 0
+                    detectionSession = FaceDetectionSession()
                 } finally {
                     recycleBitmap(bitmap)
                 }
@@ -508,15 +607,33 @@ class FridgeHomeViewModel @Inject constructor(
     fun onAuthSuccess() {
         loadUserAuthState()
         _uiState.value = _uiState.value.copy(showAuthGate = false, faceDetectionFrames = 0)
-        faceDetectionCount = 0
+        detectionSession = FaceDetectionSession()
+    }
+
+    /**
+     * 主动请求打开人脸认证门（点击标签等场景）。
+     * 与 onFaceDetectionFrame 触发的流程统一：先设置 showAuthGate 隐藏首页相机，
+     * 再由 UI 层短暂延迟后导航，避免两个页面同时抢摄像头。
+     */
+    fun openAuthGate() {
+        authGateCooldownUntil = System.currentTimeMillis() + 5000
+        _uiState.value = _uiState.value.copy(showAuthGate = true, faceDetectionFrames = 0, isProcessingAuth = true)
+        detectionSession = FaceDetectionSession()
+        viewModelScope.launch {
+            delay(15_000)
+            if (_uiState.value.isProcessingAuth) {
+                _uiState.value = _uiState.value.copy(isProcessingAuth = false)
+                Log.i("FridgeHome", "认证处理超时，自动清除处理中标志")
+            }
+        }
     }
 
     fun onAuthDismiss() {
         // 设置冷却期 + 认证处理中标志，防止从Gate返回首页后、isAuthenticated更新前的窗口期内
         // 人脸检测再次触发重复认证（覆盖collectAsStateWithLifecycle的延迟 + onUserAuthenticated执行时间）
-        authGateCooldownUntil = System.currentTimeMillis() + 3000
+        authGateCooldownUntil = System.currentTimeMillis() + 5000
         _uiState.value = _uiState.value.copy(showAuthGate = false, faceDetectionFrames = 0, isProcessingAuth = true)
-        faceDetectionCount = 0
+        detectionSession = FaceDetectionSession()
         // 启动15秒超时保险，防止用户从Gate手动返回后 isProcessingAuth 永远不清除
         viewModelScope.launch {
             delay(15_000)
@@ -541,6 +658,8 @@ class FridgeHomeViewModel @Inject constructor(
     fun logout() {
         viewModelScope.launch {
             userPreferencesRepository.clearSession()
+            hardwareManager.lockDoor()
+            hardwareManager.lightOff()
             _uiState.value = _uiState.value.copy(
                 isAuthenticated = false,
                 authUsers = emptyList(),
@@ -548,7 +667,7 @@ class FridgeHomeViewModel @Inject constructor(
                 authPromptMessage = "未认证 - 注视屏幕自动识别",
                 isProcessingAuth = false,
             )
-            faceDetectionCount = 0
+            detectionSession = FaceDetectionSession()
             authExpiryJob?.cancel()
             Log.i("FridgeHome", "用户手动退出登录")
         }
@@ -559,5 +678,8 @@ class FridgeHomeViewModel @Inject constructor(
         temperatureJob?.cancel()
         expiryCheckJob?.cancel()
         authExpiryJob?.cancel()
+        hardwareManager.stopTemperatureReading()
+        hardwareManager.lockDoor()
+        hardwareManager.lightOff()
     }
 }

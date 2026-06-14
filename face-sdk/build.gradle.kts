@@ -22,7 +22,8 @@ android {
                 cppFlags += "-std=c++17"
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
-                    "-DANDROID_PLATFORM=android-26"
+                    "-DANDROID_PLATFORM=android-26",
+                    "-DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON"
                 )
             }
         }

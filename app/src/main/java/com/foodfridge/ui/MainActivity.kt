@@ -9,13 +9,18 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.foodfridge.data.hardware.HardwareManager
 import com.foodfridge.ui.navigation.AppNavigation
 import com.foodfridge.ui.navigation.Screen
 import dagger.hilt.android.AndroidEntryPoint
 import timber.log.Timber
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var hardwareManager: HardwareManager
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
@@ -33,6 +38,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AppNavigation(startDestination = Screen.Home.route)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Timber.i("MainActivity onDestroy - locking door and turning off light")
+        try {
+            hardwareManager.lockDoor()
+            hardwareManager.lightOff()
+            hardwareManager.stopTemperatureReading()
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to lock door on destroy")
         }
     }
 

@@ -1,13 +1,20 @@
 package com.foodfridge.ui.navigation
 
+import android.net.Uri
+import androidx.camera.core.CameraSelector
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.foodfridge.data.camera.CameraCoordinator
+import com.foodfridge.data.camera.CameraCoordinatorEntryPoint
 import com.foodfridge.ui.activation.DeviceActivationScreen
+import dagger.hilt.android.EntryPointAccessors
 import com.foodfridge.ui.facecheck.FaceRecognitionGateScreen
 import com.foodfridge.ui.home.FridgeHomeScreen
 import com.foodfridge.ui.detail.SampleDetailScreen
@@ -19,8 +26,17 @@ import com.foodfridge.ui.table.SampleTableScreen
 import kotlinx.coroutines.flow.flowOf
 
 @Composable
+fun rememberCameraCoordinator(): CameraCoordinator {
+    val context = LocalContext.current
+    return remember {
+        EntryPointAccessors.fromApplication(context, CameraCoordinatorEntryPoint::class.java).cameraCoordinator()
+    }
+}
+
+@Composable
 fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
     val navController = rememberNavController()
+    val cameraCoordinator = rememberCameraCoordinator()
 
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Screen.DeviceActivation.route) {
@@ -70,6 +86,7 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                         launchSingleTop = true
                     }
                 },
+                cameraCoordinator = cameraCoordinator,
             )
         }
 
@@ -90,12 +107,13 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                 onBack = { navController.popBackStack() },
                 dualFaceAuthEnabled = dualEnabled,
                 existingAuthUsers = authUsers,
+                cameraCoordinator = cameraCoordinator,
             )
         }
 
         composable(Screen.SampleDetail.route) { backStackEntry ->
             val mealType = backStackEntry.arguments
-                ?.getString("mealType") ?: "BREAKFAST"
+                ?.getString("mealType")?.let { Uri.decode(it) } ?: "BREAKFAST"
             val dayOffset = backStackEntry.arguments
                 ?.getString("dayOffset")?.toIntOrNull() ?: 0
             SampleDetailScreen(
@@ -138,9 +156,20 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
 
         composable(Screen.BarcodeScan.route) { backStackEntry ->
             val mealType = backStackEntry.arguments
-                ?.getString("mealType") ?: "BREAKFAST"
+                ?.getString("mealType")?.let { Uri.decode(it) } ?: "BREAKFAST"
             val dayOffset = backStackEntry.arguments
                 ?.getString("dayOffset")?.toIntOrNull() ?: 0
+            val cameraSelector = remember {
+                val recommended = cameraCoordinator.getRecommendedBarcodeCameraSelector()
+                // 如果推荐的前置不可用且设备有后置，回退到后置；反之亦然
+                when {
+                    recommended == CameraSelector.DEFAULT_FRONT_CAMERA && !cameraCoordinator.hasFrontCamera() &&
+                        cameraCoordinator.hasBackCamera() -> CameraSelector.DEFAULT_BACK_CAMERA
+                    recommended == CameraSelector.DEFAULT_BACK_CAMERA && !cameraCoordinator.hasBackCamera() &&
+                        cameraCoordinator.hasFrontCamera() -> CameraSelector.DEFAULT_FRONT_CAMERA
+                    else -> recommended
+                }
+            }
             BarcodeScanScreen(
                 mealType = mealType,
                 dayOffset = dayOffset,
@@ -161,24 +190,26 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                         popUpTo(Screen.BarcodeScan.route) { inclusive = true }
                     }
                 },
+                cameraSelector = cameraSelector,
+                cameraCoordinator = cameraCoordinator,
             )
         }
 
         composable(Screen.SampleTable.route) { backStackEntry ->
             val mealType = backStackEntry.arguments
-                ?.getString("mealType") ?: "BREAKFAST"
+                ?.getString("mealType")?.let { Uri.decode(it) } ?: "BREAKFAST"
             val dayOffset = backStackEntry.arguments
                 ?.getString("dayOffset")?.toIntOrNull() ?: 0
             val barcode = backStackEntry.arguments
-                ?.getString("barcode") ?: ""
+                ?.getString("barcode")?.let { Uri.decode(it) } ?: ""
             val foodName = backStackEntry.arguments
-                ?.getString("foodName") ?: ""
+                ?.getString("foodName")?.let { Uri.decode(it) } ?: ""
             val weightGrams = backStackEntry.arguments
                 ?.getString("weightGrams")?.toFloatOrNull() ?: 0f
             val scanTime = backStackEntry.arguments
                 ?.getString("scanTime")?.toLongOrNull() ?: 0L
             val scanMealType = backStackEntry.arguments
-                ?.getString("scanMealType") ?: ""
+                ?.getString("scanMealType")?.let { Uri.decode(it) } ?: ""
             SampleTableScreen(
                 mealType = mealType,
                 dayOffset = dayOffset,
