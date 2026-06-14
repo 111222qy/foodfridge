@@ -18,8 +18,6 @@ android {
         versionName = "1.0"
 
         buildConfigField("String", "API_BASE_URL", "\"https://api-v4.debug.packertec.com/\"")
-        // TODO: 替换为设备接入平台的真实地址
-        buildConfigField("String", "API_DEVICE_BASE_URL", "\"https://device-api.example.com/\"")
         // TODO: 替换为设备注册后下发的真实 api-key
         buildConfigField("String", "API_DEVICE_KEY", "\"YOUR_DEVICE_API_KEY\"")
         buildConfigField("String", "SM4_KEY", "\"Z5S0FQBZHTHCHHOW\"")
