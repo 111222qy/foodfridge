@@ -14,8 +14,13 @@ import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.Camera
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -97,7 +102,7 @@ fun FaceGateCameraPreview(
                     }
 
                 imageAnalysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(1280, 720))
+                    .setTargetResolution(Size(640, 480))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
 
@@ -122,14 +127,14 @@ fun FaceGateCameraPreview(
                 }
 
                 // 优先前置摄像头，失败则回退到后置摄像头
-                val bound = tryBindCameraSelector(
+                val boundCamera = tryBindCameraSelector(
                     cameraProvider,
                     lifecycleOwner,
                     listOf(CameraSelector.DEFAULT_FRONT_CAMERA, CameraSelector.DEFAULT_BACK_CAMERA),
                     preview,
                     imageAnalysis,
                 )
-                if (!bound) {
+                if (boundCamera == null) {
                     throw IllegalStateException("No available camera can be bound")
                 }
                 Log.d("FaceGateCamera", "Camera bound successfully")
@@ -180,25 +185,39 @@ fun FaceGateCameraPreview(
 }
 
 /**
- * 尝试按顺序绑定多个摄像头选择器，返回是否成功。
+ * 尝试按顺序绑定多个摄像头选择器，返回绑定成功的 Camera 实例（失败返回 null）。
  */
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 private fun tryBindCameraSelector(
     cameraProvider: ProcessCameraProvider,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
     selectors: List<CameraSelector>,
     preview: Preview,
     imageAnalysis: ImageAnalysis,
-): Boolean {
+): Camera? {
     for (selector in selectors) {
         try {
-            cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+            val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
             Log.d("FaceGateCamera", "Bound camera with selector: $selector")
-            return true
+            // 启用连续自动对焦，提升 50cm 距离的人脸清晰度
+            try {
+                val camera2Control = Camera2CameraControl.from(camera.cameraControl)
+                camera2Control.captureRequestOptions = CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(
+                        android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
+                        android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                    )
+                    .build()
+                Log.d("FaceGateCamera", "Continuous AF enabled")
+            } catch (afEx: Exception) {
+                Log.w("FaceGateCamera", "Failed to enable continuous AF: ${afEx.message}")
+            }
+            return camera
         } catch (e: Exception) {
             Log.w("FaceGateCamera", "Failed to bind camera with selector: $selector", e)
         }
     }
-    return false
+    return null
 }
 
 private fun calculateAverageBrightness(bitmap: Bitmap): Double {

@@ -4,6 +4,7 @@ import com.foodfridge.BuildConfig
 import com.foodfridge.data.remote.ApiService
 import com.foodfridge.data.remote.crypto.SM4EncryptInterceptor
 import com.foodfridge.data.remote.device.interceptor.ApiKeyInterceptor
+import com.foodfridge.data.remote.device.interceptor.DynamicBaseUrlInterceptor
 import com.foodfridge.data.remote.device.route.DeviceUploadApiService
 import dagger.Module
 import dagger.Provides
@@ -62,6 +63,7 @@ object NetworkModule {
     @Named("device")
     fun provideDeviceOkHttpClient(
         apiKeyInterceptor: ApiKeyInterceptor,
+        dynamicBaseUrlInterceptor: DynamicBaseUrlInterceptor,
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
             level = if (BuildConfig.DEBUG) {
@@ -72,6 +74,7 @@ object NetworkModule {
         }
 
         return OkHttpClient.Builder()
+            .addInterceptor(dynamicBaseUrlInterceptor) // 动态 URL 必须在 api-key 之前
             .addInterceptor(apiKeyInterceptor)
             .addInterceptor(loggingInterceptor)
             .build()

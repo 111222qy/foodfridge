@@ -161,12 +161,18 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                 ?.getString("dayOffset")?.toIntOrNull() ?: 0
             val cameraSelector = remember {
                 val recommended = cameraCoordinator.getRecommendedBarcodeCameraSelector()
-                // 如果推荐的前置不可用且设备有后置，回退到后置；反之亦然
+                // 按优先级回退：外接 → 前置 → 后置
+                val external = CameraSelector.Builder()
+                    .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
+                    .build()
                 when {
-                    recommended == CameraSelector.DEFAULT_FRONT_CAMERA && !cameraCoordinator.hasFrontCamera() &&
-                        cameraCoordinator.hasBackCamera() -> CameraSelector.DEFAULT_BACK_CAMERA
-                    recommended == CameraSelector.DEFAULT_BACK_CAMERA && !cameraCoordinator.hasBackCamera() &&
-                        cameraCoordinator.hasFrontCamera() -> CameraSelector.DEFAULT_FRONT_CAMERA
+                    recommended == external && !cameraCoordinator.hasExternalCamera() -> {
+                        if (cameraCoordinator.hasFrontCamera()) CameraSelector.DEFAULT_FRONT_CAMERA
+                        else CameraSelector.DEFAULT_BACK_CAMERA
+                    }
+                    recommended == CameraSelector.DEFAULT_FRONT_CAMERA && !cameraCoordinator.hasFrontCamera() -> {
+                        CameraSelector.DEFAULT_BACK_CAMERA
+                    }
                     else -> recommended
                 }
             }

@@ -159,7 +159,7 @@ fun BarcodeScanScreen(
         when (scanState) {
             is ScanState.Scanning -> {
                 Text(
-                    text = "请对准留样小票上的条形码\n（保持 10-15 厘米距离，避免反光）",
+                    text = "请对准留样小票上的条形码\n（保持 15-25 厘米距离，避免反光和抖动）",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = Color.White.copy(alpha = 0.8f),

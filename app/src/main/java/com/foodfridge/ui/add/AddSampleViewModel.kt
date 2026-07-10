@@ -2,17 +2,23 @@ package com.foodfridge.ui.add
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Context
 import com.foodfridge.data.local.UserPreferencesRepository
+import com.foodfridge.data.remote.device.dto.SamplingUploadData
 import com.foodfridge.domain.model.FoodSample
 import com.foodfridge.domain.model.MealType
 import com.foodfridge.domain.model.SampleStatus
+import com.foodfridge.domain.repository.DeviceUploadRepository
 import com.foodfridge.domain.repository.FoodSampleRepository
+import com.foodfridge.utils.DeviceInfoProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import timber.log.Timber
 import javax.inject.Inject
 
 data class AddSampleUiState(
@@ -30,6 +36,8 @@ data class AddSampleUiState(
 class AddSampleViewModel @Inject constructor(
     private val foodSampleRepository: FoodSampleRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
+    private val deviceUploadRepository: DeviceUploadRepository,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AddSampleUiState())
@@ -103,6 +111,8 @@ class AddSampleViewModel @Inject constructor(
                 )
 
                 foodSampleRepository.insertSample(sample)
+                uploadSampling(sample)
+
                 _uiState.value = _uiState.value.copy(isSaving = false, saveSuccess = true)
                 onSuccess()
             } catch (e: Exception) {
@@ -110,6 +120,33 @@ class AddSampleViewModel @Inject constructor(
                     isSaving = false,
                     errorMessage = "保存失败: ${e.message}"
                 )
+            }
+        }
+    }
+
+    private fun uploadSampling(sample: FoodSample) {
+        viewModelScope.launch {
+            try {
+                val deviceId = DeviceInfoProvider.getDeviceNumber(appContext)
+                val result = deviceUploadRepository.uploadSampling(
+                    SamplingUploadData(
+                        device_id = deviceId,
+                        timestamp = sample.storeTime,
+                        dish_name = sample.foodName,
+                        operator_name = sample.operatorName,
+                        weight = sample.weightGrams,
+                    )
+                )
+                result.fold(
+                    onSuccess = { response ->
+                        Timber.i("留样上报成功: code=${response.code}, message=${response.message}")
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "留样上报失败")
+                    }
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "留样上报异常")
             }
         }
     }

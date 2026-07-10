@@ -19,7 +19,7 @@ android {
 
         buildConfigField("String", "API_BASE_URL", "\"https://api-v4.debug.packertec.com/\"")
         // TODO: 替换为设备注册后下发的真实 api-key
-        buildConfigField("String", "API_DEVICE_KEY", "\"YOUR_DEVICE_API_KEY\"")
+        buildConfigField("String", "API_DEVICE_KEY", "\"dev_XEnzlmN94Uoi2ePnnG4vqYBjz98pSnmG_uBiCW9zR7g\"")
         buildConfigField("String", "SM4_KEY", "\"Z5S0FQBZHTHCHHOW\"")
         buildConfigField("String", "SM4_IV", "\"VGSHUMIOL409QQCF\"")
         buildConfigField("String", "APISIX_HEADER", "\"djdhJSJSHDHQK2,66556sskakjdajdj@@curls\"")

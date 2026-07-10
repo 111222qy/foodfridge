@@ -34,6 +34,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -247,6 +248,69 @@ fun SettingsScreen(
                     uncheckedThumbColor = Color.White,
                     uncheckedTrackColor = Color(0xFFD1D5DB),
                 ),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // ── 平台 API 地址配置 ──────────────────────────────────
+        Text(
+            text = "平台连接配置",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF374151),
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        var apiUrl by remember { mutableStateOf(uiState.apiBaseUrl) }
+
+        LaunchedEffect(uiState.apiBaseUrl) {
+            apiUrl = uiState.apiBaseUrl
+        }
+
+        OutlinedTextField(
+            value = apiUrl,
+            onValueChange = { apiUrl = it },
+            label = { Text("平台 API 地址（如 http://192.168.1.100:8000）") },
+            placeholder = { Text("留空使用默认地址") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color(0xFF2563EB),
+                focusedLabelColor = Color(0xFF2563EB),
+            ),
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(
+            onClick = { viewModel.saveApiBaseUrl(apiUrl) },
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF2563EB),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("保存 API 地址")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(
+            onClick = { viewModel.debugApiConnection() },
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("测试接口") }
+
+        uiState.apiDebugResult?.let { result ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = result,
+                fontSize = 12.sp,
+                color = if (result.startsWith("✅")) Color(0xFF059669) else Color(0xFFDC2626),
+                lineHeight = 18.sp,
             )
         }
 

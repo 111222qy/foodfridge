@@ -1,10 +1,17 @@
 package com.foodfridge.ui.scan
 
 import android.Manifest
+import android.content.Context
+import android.graphics.Bitmap
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.util.Log
 import android.util.Size
 import android.view.MotionEvent
 import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
@@ -39,7 +46,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val BARCODE_ZOOM_RATIO = 1.5f
+private const val BARCODE_FIXED_FOCUS_ZOOM_RATIO = 1.0f
 private const val BARCODE_EXPOSURE_COMPENSATION = 2
+private const val AUTO_FOCUS_INTERVAL_MS = 2500L
 
 /**
  * 条形码扫描相机预览组件
@@ -98,8 +107,64 @@ fun BarcodeCameraPreview(
         var cameraExecutor: ExecutorService? = null
         var imageAnalysis: ImageAnalysis? = null
         var preview: Preview? = null
+        var focusRunnable: Runnable? = null
         var isDisposed = false
         var bindingRunnable: Runnable? = null
+
+        fun buildAnalyzer(): ImageAnalysis.Analyzer {
+            return ImageAnalysis.Analyzer { imageProxy ->
+                if (!isScanning.get()) {
+                    imageProxy.close()
+                    return@Analyzer
+                }
+                processImageProxy(barcodeScanner, imageProxy) { rawValue ->
+                    Log.d("BarcodeCamera", "QR detected: $rawValue")
+                    isScanning.set(false)
+                    onBarcodeDetectedRef.value(rawValue)
+                }
+            }
+        }
+
+        fun tryResolutionAndBind(
+            targetSize: Size,
+            selectorsToTry: List<CameraSelector>,
+        ): Camera? {
+            cameraExecutor?.shutdown()
+            cameraExecutor = Executors.newSingleThreadExecutor()
+            imageAnalysis?.clearAnalyzer()
+
+            preview = Preview.Builder().build().apply {
+                setSurfaceProvider(previewView.surfaceProvider)
+            }
+
+            imageAnalysis = ImageAnalysis.Builder()
+                .setTargetResolution(targetSize)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .apply {
+                    setAnalyzer(cameraExecutor!!, buildAnalyzer())
+                }
+
+            var camera: Camera? = null
+            var lastError: Exception? = null
+            for (selector in selectorsToTry) {
+                try {
+                    cameraProvider?.unbindAll()
+                    camera = cameraProvider?.bindToLifecycle(
+                        lifecycleOwner,
+                        selector,
+                        preview,
+                        imageAnalysis,
+                    )
+                    Log.d("BarcodeCamera", "Camera bound successfully with $selector at $targetSize")
+                    return camera
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.w("BarcodeCamera", "Failed to bind camera with selector: $selector at $targetSize", e)
+                }
+            }
+            throw lastError ?: IllegalStateException("没有可用的摄像头")
+        }
 
         if (hasPermission && enabled) {
             Log.d("BarcodeCamera", "Starting camera setup")
@@ -114,29 +179,26 @@ fun BarcodeCameraPreview(
                     throw IllegalStateException("无法获取摄像头，当前被其他功能占用")
                 }
 
-                cameraExecutor = Executors.newSingleThreadExecutor()
                 cameraProvider = ProcessCameraProvider.getInstance(context).get()
 
-                preview = Preview.Builder()
-                    .build()
-                    .apply {
-                        setSurfaceProvider(previewView.surfaceProvider)
+                val selectorsToTry = buildList {
+                    add(cameraSelector)
+                    // 外接摄像头回退
+                    val external = CameraSelector.Builder()
+                        .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
+                        .build()
+                    if (cameraSelector != external && cameraCoordinator?.hasExternalCamera() == true) {
+                        add(external)
                     }
-
-                imageAnalysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(1920, 1080))
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-
-                imageAnalysis.setAnalyzer(cameraExecutor!!) { imageProxy ->
-                    if (!isScanning.get()) {
-                        imageProxy.close()
-                        return@setAnalyzer
+                    if (cameraSelector != CameraSelector.DEFAULT_BACK_CAMERA &&
+                        cameraCoordinator?.hasBackCamera() != false
+                    ) {
+                        add(CameraSelector.DEFAULT_BACK_CAMERA)
                     }
-                    processImageProxy(barcodeScanner, imageProxy) { rawValue ->
-                        Log.d("BarcodeCamera", "QR detected: $rawValue")
-                        isScanning.set(false)
-                        onBarcodeDetectedRef.value(rawValue)
+                    if (cameraSelector != CameraSelector.DEFAULT_FRONT_CAMERA &&
+                        cameraCoordinator?.hasFrontCamera() != false
+                    ) {
+                        add(CameraSelector.DEFAULT_FRONT_CAMERA)
                     }
                 }
 
@@ -144,68 +206,19 @@ fun BarcodeCameraPreview(
                 bindingRunnable = Runnable {
                     if (isDisposed) return@Runnable
                     try {
-                        cameraProvider?.unbindAll()
-
-                        val selectorsToTry = buildList {
-                            add(cameraSelector)
-                            if (cameraSelector != CameraSelector.DEFAULT_BACK_CAMERA &&
-                                cameraCoordinator?.hasBackCamera() != false
-                            ) {
-                                add(CameraSelector.DEFAULT_BACK_CAMERA)
-                            }
-                            if (cameraSelector != CameraSelector.DEFAULT_FRONT_CAMERA &&
-                                cameraCoordinator?.hasFrontCamera() != false
-                            ) {
-                                add(CameraSelector.DEFAULT_FRONT_CAMERA)
-                            }
-                        }
-
                         var camera: Camera? = null
-                        var bound = false
-                        var lastError: Exception? = null
-                        for (selector in selectorsToTry) {
-                            try {
-                                camera = cameraProvider?.bindToLifecycle(
-                                    lifecycleOwner,
-                                    selector,
-                                    preview,
-                                    imageAnalysis,
-                                )
-                                bound = true
-                                Log.d("BarcodeCamera", "Camera bound successfully with $selector")
-                                break
-                            } catch (e: Exception) {
-                                lastError = e
-                                Log.w("BarcodeCamera", "Failed to bind camera with selector: $selector", e)
-                            }
-                        }
-                        if (!bound) {
-                            throw lastError ?: IllegalStateException("没有可用的摄像头")
+                        try {
+                            camera = tryResolutionAndBind(Size(1920, 1080), selectorsToTry)
+                        } catch (e: Exception) {
+                            Log.w("BarcodeCamera", "Failed at 1080p, falling back to 720p", e)
+                            camera = tryResolutionAndBind(Size(1280, 720), selectorsToTry)
                         }
 
-                        // 前置摄像头多为固定焦距，用数字变焦拉近条码 + 增加曝光补偿提亮
-                        try {
-                            camera?.cameraControl?.setZoomRatio(BARCODE_ZOOM_RATIO)
-                            Log.d("BarcodeCamera", "Set zoom ratio to $BARCODE_ZOOM_RATIO")
-                        } catch (e: Exception) {
-                            Log.w("BarcodeCamera", "Failed to set zoom ratio", e)
-                        }
-                        try {
-                            val exposureState = camera?.cameraInfo?.exposureState
-                            if (exposureState?.isExposureCompensationSupported == true) {
-                                val range = exposureState.exposureCompensationRange
-                                val targetIndex = BARCODE_EXPOSURE_COMPENSATION.coerceIn(
-                                    range.lower,
-                                    range.upper,
-                                )
-                                camera?.cameraControl?.setExposureCompensationIndex(targetIndex)
-                                Log.d("BarcodeCamera", "Set exposure compensation to $targetIndex")
-                            }
-                        } catch (e: Exception) {
-                            Log.w("BarcodeCamera", "Failed to set exposure compensation", e)
-                        }
+                        applyCameraOptimizations(context, camera, previewView)
+                        startPeriodicFocus(camera, previewView) { isScanning.get() }
+                            .also { focusRunnable = it }
 
-                        // 点击屏幕重新对焦/测光（前置摄像头 AF 能力有限，主要触发 AE 锁定）
+                        // 点击屏幕重新对焦/测光
                         previewView.setOnTouchListener { _, event ->
                             if (event.action == MotionEvent.ACTION_DOWN) {
                                 val factory = previewView.meteringPointFactory
@@ -218,7 +231,7 @@ fun BarcodeCameraPreview(
                                     .build()
                                 camera?.cameraControl?.startFocusAndMetering(action)
                                     ?.addListener({
-                                        Log.d("BarcodeCamera", "Focus and metering completed")
+                                        Log.d("BarcodeCamera", "Tap focus and metering completed")
                                     }, ContextCompat.getMainExecutor(context))
                                 Log.d("BarcodeCamera", "Tap to focus/meter at (${event.x}, ${event.y})")
                                 true
@@ -244,6 +257,7 @@ fun BarcodeCameraPreview(
         onDispose {
             Log.d("BarcodeCamera", "Releasing camera resources")
             isDisposed = true
+            focusRunnable?.let { previewView.removeCallbacks(it) }
             bindingRunnable?.let { previewView.removeCallbacks(it) }
             previewView.setOnTouchListener(null)
             try {
@@ -268,6 +282,111 @@ fun BarcodeCameraPreview(
     )
 }
 
+/**
+ * 应用相机优化：变焦、曝光补偿、连续自动对焦、中心对焦。
+ */
+private fun applyCameraOptimizations(context: Context, camera: Camera?, previewView: PreviewView) {
+    if (camera == null) return
+
+    try {
+        val cameraId = Camera2CameraInfo.from(camera.cameraInfo).cameraId
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+
+        val minFocusDistance = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+        val isFixedFocus = minFocusDistance == 0f || afModes == null || afModes.isEmpty()
+
+        Log.d(
+            "BarcodeCamera",
+            "Camera optimizations: cameraId=$cameraId, minFocusDistance=$minFocusDistance, " +
+                "afModes=${afModes?.contentToString()}, isFixedFocus=$isFixedFocus"
+        )
+
+        // 固定焦距摄像头近距离数字变焦会让条码更糊，使用 1.0x；可变焦则使用 1.5x
+        val zoomRatio = if (isFixedFocus) BARCODE_FIXED_FOCUS_ZOOM_RATIO else BARCODE_ZOOM_RATIO
+        try {
+            camera.cameraControl.setZoomRatio(zoomRatio)
+            Log.d("BarcodeCamera", "Set zoom ratio to $zoomRatio (fixedFocus=$isFixedFocus)")
+        } catch (e: Exception) {
+            Log.w("BarcodeCamera", "Failed to set zoom ratio", e)
+        }
+
+        try {
+            val exposureState = camera.cameraInfo.exposureState
+            if (exposureState?.isExposureCompensationSupported == true) {
+                val range = exposureState.exposureCompensationRange
+                val targetIndex = BARCODE_EXPOSURE_COMPENSATION.coerceIn(range.lower, range.upper)
+                camera.cameraControl.setExposureCompensationIndex(targetIndex)
+                Log.d("BarcodeCamera", "Set exposure compensation to $targetIndex")
+            }
+        } catch (e: Exception) {
+            Log.w("BarcodeCamera", "Failed to set exposure compensation", e)
+        }
+
+        // 尝试开启连续自动对焦
+        if (afModes != null && afModes.isNotEmpty() &&
+            afModes.contains(CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        ) {
+            try {
+                val camera2Control = Camera2CameraControl.from(camera.cameraControl)
+                val options = CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(
+                        android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
+                        CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+                    )
+                    .build()
+                camera2Control.setCaptureRequestOptions(options)
+                Log.d("BarcodeCamera", "Continuous AF enabled")
+            } catch (e: Exception) {
+                Log.w("BarcodeCamera", "Failed to enable continuous AF", e)
+            }
+        }
+
+        // 首次中心对焦
+        triggerCenterFocus(camera, previewView)
+    } catch (e: Exception) {
+        Log.w("BarcodeCamera", "Failed to apply camera optimizations", e)
+    }
+}
+
+private fun triggerCenterFocus(camera: Camera?, previewView: PreviewView) {
+    try {
+        val width = previewView.width
+        val height = previewView.height
+        if (width <= 0 || height <= 0) return
+
+        val factory = previewView.meteringPointFactory
+        val point = factory.createPoint(width / 2f, height / 2f)
+        val action = FocusMeteringAction.Builder(
+            point,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE,
+        )
+            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+            .build()
+        camera?.cameraControl?.startFocusAndMetering(action)
+            ?.addListener({
+                Log.d("BarcodeCamera", "Center focus and metering completed")
+            }, ContextCompat.getMainExecutor(previewView.context))
+        Log.d("BarcodeCamera", "Triggered center focus at (${width / 2f}, ${height / 2f})")
+    } catch (e: Exception) {
+        Log.w("BarcodeCamera", "Failed to trigger center focus", e)
+    }
+}
+
+private fun startPeriodicFocus(camera: Camera?, previewView: PreviewView, isScanning: () -> Boolean): Runnable {
+    val runnable = object : Runnable {
+        override fun run() {
+            if (isScanning()) {
+                triggerCenterFocus(camera, previewView)
+            }
+            previewView.postDelayed(this, AUTO_FOCUS_INTERVAL_MS)
+        }
+    }
+    previewView.postDelayed(runnable, AUTO_FOCUS_INTERVAL_MS)
+    return runnable
+}
+
 @OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(
     scanner: com.google.mlkit.vision.barcode.BarcodeScanner,
@@ -282,23 +401,95 @@ private fun processImageProxy(
 
     val rotation = imageProxy.imageInfo.rotationDegrees
     val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
+    val proxyClosed = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // 先用原始图像尝试识别
     scanner.process(inputImage)
         .addOnSuccessListener { barcodes ->
-            Log.d("BarcodeCamera", "ML Kit detected ${barcodes.size} barcodes")
-            for (barcode in barcodes) {
-                val rawValue = barcode.rawValue
-                if (!rawValue.isNullOrBlank()) {
-                    Log.d("BarcodeCamera", "Barcode raw value: $rawValue")
-                    onDetected(rawValue)
-                    break
+            if (barcodes.isNotEmpty()) {
+                for (barcode in barcodes) {
+                    val rawValue = barcode.rawValue
+                    if (!rawValue.isNullOrBlank()) {
+                        Log.d("BarcodeCamera", "Barcode detected (raw): $rawValue")
+                        onDetected(rawValue)
+                        break
+                    }
                 }
+            } else {
+                // 原始图像未识别到，尝试增强对比度后重新识别
+                proxyClosed.set(true)
+                tryEnhancedScan(scanner, imageProxy, rotation, onDetected)
             }
         }
         .addOnFailureListener { e ->
             Log.e("BarcodeCamera", "Barcode detection failed", e)
         }
         .addOnCompleteListener {
-            imageProxy.close()
+            if (!proxyClosed.get()) {
+                imageProxy.close()
+            }
         }
+}
+
+/**
+ * 对图像进行对比度增强和锐化后重新尝试条码识别。
+ * 固定焦距摄像头在近距离拍摄时图像模糊，增强对比度有助于 ML Kit 识别。
+ */
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
+private fun tryEnhancedScan(
+    scanner: com.google.mlkit.vision.barcode.BarcodeScanner,
+    imageProxy: ImageProxy,
+    rotation: Int,
+    onDetected: (String) -> Unit,
+) {
+    try {
+        val bitmap = imageProxy.toBitmap()
+        imageProxy.close()
+
+        // 1. 对比度增强：使用 ColorMatrix 拉伸对比度
+        val contrast = 1.8f // 对比度倍数
+        val brightness = -30f // 亮度偏移（稍微降低整体亮度，突出暗色条码）
+        val colorMatrix = android.graphics.ColorMatrix(floatArrayOf(
+            contrast, 0f, 0f, 0f, brightness,
+            0f, contrast, 0f, 0f, brightness,
+            0f, 0f, contrast, 0f, brightness,
+            0f, 0f, 0f, 1f, 0f,
+        ))
+
+        val enhanced = Bitmap.createBitmap(bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(enhanced)
+        val paint = android.graphics.Paint().apply {
+            colorFilter = android.graphics.ColorMatrixColorFilter(colorMatrix)
+            isAntiAlias = true
+        }
+        canvas.drawBitmap(bitmap, 0f, 0f, paint)
+        bitmap.recycle()
+
+        // 2. 锐化：通过 Canvas 缩放实现轻微锐化效果
+        val enhancedInput = InputImage.fromBitmap(enhanced, rotation)
+        scanner.process(enhancedInput)
+            .addOnSuccessListener { barcodes ->
+                if (barcodes.isNotEmpty()) {
+                    Log.d("BarcodeCamera", "ML Kit detected ${barcodes.size} barcodes (enhanced)")
+                    for (barcode in barcodes) {
+                        val rawValue = barcode.rawValue
+                        if (!rawValue.isNullOrBlank()) {
+                            Log.d("BarcodeCamera", "Barcode raw value (enhanced): $rawValue")
+                            onDetected(rawValue)
+                            return@addOnSuccessListener
+                        }
+                    }
+                }
+                Log.d("BarcodeCamera", "No barcode detected even after enhancement")
+            }
+            .addOnFailureListener { e ->
+                Log.e("BarcodeCamera", "Enhanced barcode detection failed", e)
+            }
+            .addOnCompleteListener {
+                enhanced.recycle()
+            }
+    } catch (e: Exception) {
+        Log.e("BarcodeCamera", "Enhanced scan error", e)
+        imageProxy.close()
+    }
 }

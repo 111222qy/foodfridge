@@ -1,8 +1,14 @@
 package com.foodfridge.ui
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -10,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.foodfridge.data.hardware.HardwareManager
+import com.foodfridge.service.FridgeKeepAliveService
 import com.foodfridge.ui.navigation.AppNavigation
 import com.foodfridge.ui.navigation.Screen
 import dagger.hilt.android.AndroidEntryPoint
@@ -39,6 +46,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppNavigation(startDestination = Screen.Home.route)
         }
+
+        startKeepAliveService()
+        requestIgnoreBatteryOptimizations()
     }
 
     override fun onDestroy() {
@@ -71,6 +81,38 @@ class MainActivity : ComponentActivity() {
             requestPermissionLauncher.launch(notGranted.toTypedArray())
         } else {
             Timber.i("All permissions granted")
+        }
+    }
+
+    private fun startKeepAliveService() {
+        try {
+            val intent = Intent(this, FridgeKeepAliveService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Timber.i("Keep-alive service started")
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to start keep-alive service")
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                val intent = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                )
+                startActivity(intent)
+                Timber.i("Requesting ignore battery optimizations")
+            } else {
+                Timber.i("Already ignoring battery optimizations")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to request ignore battery optimizations")
         }
     }
 }

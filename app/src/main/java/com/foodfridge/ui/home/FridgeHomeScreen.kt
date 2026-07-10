@@ -45,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -89,6 +90,20 @@ fun FridgeHomeScreen(
 
     LaunchedEffect(Unit) {
         viewModel.refreshAuthState()
+    }
+
+    // 从设置页返回时恢复人脸检测
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.setSettingsOpen(false)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     // 处理从人脸识别页面返回的认证用户
@@ -192,7 +207,7 @@ fun FridgeHomeScreen(
 
         // 隐藏的相机预览（用于人脸检测，1x1dp 完全不可见）
         val isBarcodeScanActive = cameraCoordinator?.getCurrentPurpose() == CameraCoordinator.CameraPurpose.BARCODE_SCAN
-        val shouldShowHiddenCamera = !uiState.isAuthenticated && !uiState.showAuthGate && !uiState.isProcessingAuth && !isBarcodeScanActive
+        val shouldShowHiddenCamera = !uiState.isAuthenticated && !uiState.showAuthGate && !uiState.isProcessingAuth && !uiState.isSettingsOpen && !isBarcodeScanActive
         if (shouldShowHiddenCamera) {
             Box(
                 modifier = Modifier.size(1.dp),
@@ -223,6 +238,7 @@ fun FridgeHomeScreen(
                 onDismiss = { showSettingsAuthDialog = false },
                 onConfirm = {
                     showSettingsAuthDialog = false
+                    viewModel.setSettingsOpen(true)
                     onNavigateToSettings()
                 },
             )

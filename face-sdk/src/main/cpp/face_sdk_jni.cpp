@@ -484,7 +484,7 @@ Java_com_smartcheck_sdk_face_FaceSdk_nativeInit(
         g_face_tracker = std::make_unique<seeta::FaceTracker>(g_fd_setting, 640, 480);
         LOGI("nativeInit FaceTracker ok");
 
-        g_face_detector->set(seeta::FaceDetector::PROPERTY_MIN_FACE_SIZE, 40);
+        g_face_detector->set(seeta::FaceDetector::PROPERTY_MIN_FACE_SIZE, 20);
 
         g_landmark_num = g_face_landmarker->number();
         g_initialized = true;

@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -44,6 +45,13 @@ class UserPreferencesRepository @Inject constructor(
         val REFRESH_TOKEN_EXPIRES_AT = longPreferencesKey("refresh_token_expires_at")
         val DUAL_FACE_AUTH_ENABLED = booleanPreferencesKey("dual_face_auth_enabled")
         val ADMIN_PASSWORD = stringPreferencesKey("admin_password")
+
+        // 温度传感器覆盖配置（现场调试使用）
+        val THERMAL_ZONE_OVERRIDE = stringPreferencesKey("thermal_zone_override")
+        val THERMAL_ZONE_SCALE = intPreferencesKey("thermal_zone_scale")
+
+        // 平台 API 地址（可在设置页修改）
+        val API_BASE_URL = stringPreferencesKey("api_base_url")
     }
 
     @Volatile
@@ -76,6 +84,44 @@ class UserPreferencesRepository @Inject constructor(
         .map { preferences ->
             preferences[ADMIN_PASSWORD]
         }
+
+    val thermalZoneOverride: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[THERMAL_ZONE_OVERRIDE]
+        }
+
+    val thermalZoneScale: Flow<Int> = context.dataStore.data
+        .map { preferences ->
+            preferences[THERMAL_ZONE_SCALE] ?: -1
+        }
+
+    /** 平台 API 地址，为空时使用 BuildConfig 默认值。 */
+    val apiBaseUrl: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[API_BASE_URL]
+        }
+
+    suspend fun saveApiBaseUrl(url: String?) {
+        context.dataStore.edit { preferences ->
+            if (url.isNullOrBlank()) {
+                preferences.remove(API_BASE_URL)
+            } else {
+                preferences[API_BASE_URL] = url.trimEnd('/')
+            }
+        }
+    }
+
+    suspend fun saveThermalZoneOverride(path: String?, scale: Int = -1) {
+        context.dataStore.edit { preferences ->
+            if (path.isNullOrBlank()) {
+                preferences.remove(THERMAL_ZONE_OVERRIDE)
+                preferences.remove(THERMAL_ZONE_SCALE)
+            } else {
+                preferences[THERMAL_ZONE_OVERRIDE] = path
+                preferences[THERMAL_ZONE_SCALE] = scale
+            }
+        }
+    }
 
     val lastLoginPassword: Flow<String?> = context.dataStore.data
         .map { preferences ->
@@ -205,6 +251,12 @@ class UserPreferencesRepository @Inject constructor(
 
         cachedAuthorizationHeader = null
         authorizationHeaderCacheInitialized = true
+    }
+
+    suspend fun clearLoginFlag() {
+        context.dataStore.edit { preferences ->
+            preferences.remove(IS_LOGGED_IN)
+        }
     }
 
     suspend fun clearSession() {

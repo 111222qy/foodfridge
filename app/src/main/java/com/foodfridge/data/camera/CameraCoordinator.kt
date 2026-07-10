@@ -163,15 +163,31 @@ class CameraCoordinator @Inject constructor(
     }
 
     /**
+     * 判断设备是否有外接摄像头
+     */
+    fun hasExternalCamera(): Boolean {
+        return enumerateCameras().any { it.lensFacing == "external" }
+    }
+
+    /**
+     * 获取外接摄像头的 CameraSelector
+     */
+    private fun externalCameraSelector(): CameraSelector {
+        return CameraSelector.Builder()
+            .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
+            .build()
+    }
+
+    /**
      * 获取推荐的扫码摄像头选择器
      *
-     * 优先使用前置摄像头（设备前置摄像头面向取样口，适合扫描留样小票）
+     * 优先使用外接摄像头（USB），其次前置，最后后置。
      */
     fun getRecommendedBarcodeCameraSelector(): CameraSelector {
-        return if (hasFrontCamera()) {
-            CameraSelector.DEFAULT_FRONT_CAMERA
-        } else {
-            CameraSelector.DEFAULT_BACK_CAMERA
+        return when {
+            hasExternalCamera() -> externalCameraSelector()
+            hasFrontCamera() -> CameraSelector.DEFAULT_FRONT_CAMERA
+            else -> CameraSelector.DEFAULT_BACK_CAMERA
         }
     }
 
