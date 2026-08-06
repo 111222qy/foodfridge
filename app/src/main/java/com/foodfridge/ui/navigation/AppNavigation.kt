@@ -1,28 +1,30 @@
 package com.foodfridge.ui.navigation
 
 import android.net.Uri
-import androidx.camera.core.CameraSelector
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.foodfridge.data.camera.CameraCoordinator
 import com.foodfridge.data.camera.CameraCoordinatorEntryPoint
+import com.foodfridge.data.hardware.SerialBarcodeScanner
+import com.foodfridge.domain.model.MealType
 import com.foodfridge.ui.activation.DeviceActivationScreen
-import dagger.hilt.android.EntryPointAccessors
+import com.foodfridge.ui.add.AddSampleScreen
+import com.foodfridge.ui.detail.SampleDetailScreen
 import com.foodfridge.ui.facecheck.FaceRecognitionGateScreen
 import com.foodfridge.ui.home.FridgeHomeScreen
-import com.foodfridge.ui.detail.SampleDetailScreen
-import com.foodfridge.ui.add.AddSampleScreen
-import com.foodfridge.ui.settings.SettingsScreen
+import com.foodfridge.ui.scan.SerialBarcodeScanScreen
 import com.foodfridge.ui.settings.FaceEnrollScreen
-import com.foodfridge.ui.scan.BarcodeScanScreen
+import com.foodfridge.ui.settings.SettingsScreen
 import com.foodfridge.ui.table.SampleTableScreen
+import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.flow.flowOf
 
 @Composable
@@ -102,9 +104,14 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                     navController.previousBackStackEntry
                         ?.savedStateHandle
                         ?.set("auth_user_id", matchedUserId)
-                    navController.popBackStack()
+                    navController.popBackStack(Screen.Home.route, inclusive = false)
                 },
-                onBack = { navController.popBackStack() },
+                onBack = {
+                    navController.previousBackStackEntry
+                        ?.savedStateHandle
+                        ?.set("auth_user_id", 0)
+                    navController.popBackStack(Screen.Home.route, inclusive = false)
+                },
                 dualFaceAuthEnabled = dualEnabled,
                 existingAuthUsers = authUsers,
                 cameraCoordinator = cameraCoordinator,
@@ -128,9 +135,51 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
             )
         }
 
-        composable(Screen.AddSample.route) {
+        composable(Screen.AddSample.route) { backStackEntry ->
+            val viewModel: com.foodfridge.ui.add.AddSampleViewModel = hiltViewModel(backStackEntry)
+            val barcode by backStackEntry.savedStateHandle
+                .getStateFlow<String?>("add_sample_barcode", null)
+                .collectAsStateWithLifecycle()
+            val payload by backStackEntry.savedStateHandle
+                .getStateFlow<com.foodfridge.domain.scan.BarcodePayload?>("add_sample_payload", null)
+                .collectAsStateWithLifecycle()
+
+            LaunchedEffect(barcode, payload) {
+                val currentBarcode = barcode
+                val currentPayload = payload
+                if (currentBarcode != null && currentPayload != null) {
+                    viewModel.onScanResult(currentBarcode, currentPayload)
+                    backStackEntry.savedStateHandle.remove<String>("add_sample_barcode")
+                    backStackEntry.savedStateHandle.remove<com.foodfridge.domain.scan.BarcodePayload>("add_sample_payload")
+                }
+            }
+
             AddSampleScreen(
                 onNavigateBack = { navController.popBackStack() },
+                onNavigateToSerialScan = {
+                    navController.navigate(Screen.AddSampleScan.route) {
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+
+        composable(Screen.AddSampleScan.route) {
+            SerialBarcodeScanScreen(
+                mealType = MealType.BREAKFAST.name,
+                dayOffset = 0,
+                onNavigateBack = { navController.popBackStack() },
+                onScanComplete = { barcode, payload ->
+                    navController.previousBackStackEntry
+                        ?.savedStateHandle
+                        ?.set("add_sample_barcode", barcode)
+                    navController.previousBackStackEntry
+                        ?.savedStateHandle
+                        ?.set("add_sample_payload", payload)
+                    navController.popBackStack()
+                },
+                serialPort = com.foodfridge.data.hardware.SerialBarcodeScanner.DEFAULT_DEVICE_PATH,
+                baudRate = com.foodfridge.data.hardware.SerialBarcodeScanner.DEFAULT_BAUD_RATE,
             )
         }
 
@@ -159,24 +208,8 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                 ?.getString("mealType")?.let { Uri.decode(it) } ?: "BREAKFAST"
             val dayOffset = backStackEntry.arguments
                 ?.getString("dayOffset")?.toIntOrNull() ?: 0
-            val cameraSelector = remember {
-                val recommended = cameraCoordinator.getRecommendedBarcodeCameraSelector()
-                // 按优先级回退：外接 → 前置 → 后置
-                val external = CameraSelector.Builder()
-                    .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
-                    .build()
-                when {
-                    recommended == external && !cameraCoordinator.hasExternalCamera() -> {
-                        if (cameraCoordinator.hasFrontCamera()) CameraSelector.DEFAULT_FRONT_CAMERA
-                        else CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-                    recommended == CameraSelector.DEFAULT_FRONT_CAMERA && !cameraCoordinator.hasFrontCamera() -> {
-                        CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-                    else -> recommended
-                }
-            }
-            BarcodeScanScreen(
+            val context = LocalContext.current
+            SerialBarcodeScanScreen(
                 mealType = mealType,
                 dayOffset = dayOffset,
                 onNavigateBack = { navController.popBackStack() },
@@ -196,8 +229,8 @@ fun AppNavigation(startDestination: String = Screen.DeviceActivation.route) {
                         popUpTo(Screen.BarcodeScan.route) { inclusive = true }
                     }
                 },
-                cameraSelector = cameraSelector,
-                cameraCoordinator = cameraCoordinator,
+                serialPort = SerialBarcodeScanner.DEFAULT_DEVICE_PATH,
+                baudRate = SerialBarcodeScanner.DEFAULT_BAUD_RATE,
             )
         }
 

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,21 +31,20 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,6 +57,7 @@ import com.foodfridge.domain.model.SampleStatus
 import com.foodfridge.ui.facecheck.FaceGateCameraPreview
 import com.foodfridge.ui.theme.AuthExitRed
 import com.foodfridge.ui.theme.CardDispose
+import com.foodfridge.ui.theme.CardDisposed
 import com.foodfridge.ui.theme.CardStoring
 import com.foodfridge.ui.theme.CardWaiting
 import com.foodfridge.ui.theme.DarkBg
@@ -92,12 +93,26 @@ fun FridgeHomeScreen(
         viewModel.refreshAuthState()
     }
 
-    // 从设置页返回时恢复人脸检测
+    // 计算实际显示的日期（基于baseDate）
+    // Day1 = 今天, Day2 = 明天, Day3 = 后天
+    val day1Date = remember(uiState.baseDate) { formatDayDateFromBaseDate(uiState.baseDate, 0) }
+    val day2Date = remember(uiState.baseDate) { formatDayDateFromBaseDate(uiState.baseDate, 1) }
+    val day3Date = remember(uiState.baseDate) { formatDayDateFromBaseDate(uiState.baseDate, 2) }
+
+    // 从设置页返回时恢复人脸检测；页面暂停时暂停认证计时，恢复时继续
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.setSettingsOpen(false)
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    viewModel.setSettingsOpen(false)
+                    viewModel.resumeAuthExpiryTimer()
+                    viewModel.refreshMealStates()
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.pauseAuthExpiryTimer()
+                }
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -106,11 +121,17 @@ fun FridgeHomeScreen(
         }
     }
 
-    // 处理从人脸识别页面返回的认证用户
+    // 处理人脸识别页返回结果：正数为认证用户，0 为用户取消。
     LaunchedEffect(authUserId) {
-        if (authUserId > 0) {
-            viewModel.onUserAuthenticated(authUserId)
-            onAuthHandled()
+        when {
+            authUserId > 0 -> {
+                viewModel.onUserAuthenticated(authUserId)
+                onAuthHandled()
+            }
+            authUserId == 0 -> {
+                viewModel.onAuthCancelled()
+                onAuthHandled()
+            }
         }
     }
 
@@ -130,8 +151,8 @@ fun FridgeHomeScreen(
                 Log.w("FridgeHome", "等待相机释放超时，强制继续")
                 cameraCoordinator?.forceRelease()
             }
+            viewModel.onAuthGateNavigated()
             onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
-            viewModel.onAuthDismiss()
         }
     }
 
@@ -141,9 +162,9 @@ fun FridgeHomeScreen(
             uiState.authUsers.size == 1 &&
             (uiState.authUsers[0].role == "SUPERVISOR" || uiState.authUsers[0].role == "SAMPLER")
         ) {
-            delay(3000) // 延长到 3 秒，给第一个 Gate 的相机资源完全释放
-            viewModel.onAuthDismiss()
-            onNavigateToFaceRecognition(uiState.dualFaceAuthEnabled, uiState.authUsers)
+            // 第一轮 Gate 已经退出；短暂让出主线程后走统一的相机释放/导航流程。
+            delay(300)
+            viewModel.openAuthGate()
         }
     }
 
@@ -208,6 +229,11 @@ fun FridgeHomeScreen(
         // 隐藏的相机预览（用于人脸检测，1x1dp 完全不可见）
         val isBarcodeScanActive = cameraCoordinator?.getCurrentPurpose() == CameraCoordinator.CameraPurpose.BARCODE_SCAN
         val shouldShowHiddenCamera = !uiState.isAuthenticated && !uiState.showAuthGate && !uiState.isProcessingAuth && !uiState.isSettingsOpen && !isBarcodeScanActive
+
+        LaunchedEffect(shouldShowHiddenCamera) {
+            Log.d("FridgeHome", "shouldShowHiddenCamera=$shouldShowHiddenCamera, auth=${uiState.isAuthenticated}, gate=${uiState.showAuthGate}, processing=${uiState.isProcessingAuth}, settings=${uiState.isSettingsOpen}")
+        }
+
         if (shouldShowHiddenCamera) {
             Box(
                 modifier = Modifier.size(1.dp),
@@ -219,6 +245,7 @@ fun FridgeHomeScreen(
                     onCameraError = {},
                     onCameraBoundChanged = {},
                     enabled = true,
+                    highQuality = true,
                     cameraCoordinator = cameraCoordinator,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -229,6 +256,7 @@ fun FridgeHomeScreen(
         TemperatureCircle(
             temperature = uiState.temperature,
             isTemperatureAlarm = uiState.isTemperatureAlarm,
+            isTemperatureSensorFault = uiState.isTemperatureSensorFault,
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -247,11 +275,11 @@ fun FridgeHomeScreen(
         // 三列并排显示三天
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // 第一天
+            // 第一天（昨天）
             DayColumn(
-                dayLabel = formatDayDate(-2),
+                dayLabel = day1Date,
                 cards = uiState.day1Cards,
                 isAuthenticated = uiState.isAuthenticated,
                 onCardClick = { mealType ->
@@ -263,9 +291,9 @@ fun FridgeHomeScreen(
                 },
                 modifier = Modifier.weight(1f),
             )
-            // 第二天
+            // 第二天（今天）
             DayColumn(
-                dayLabel = formatDayDate(-1),
+                dayLabel = day2Date,
                 cards = uiState.day2Cards,
                 isAuthenticated = uiState.isAuthenticated,
                 onCardClick = { mealType ->
@@ -277,9 +305,9 @@ fun FridgeHomeScreen(
                 },
                 modifier = Modifier.weight(1f),
             )
-            // 第三天
+            // 第三天（明天）
             DayColumn(
-                dayLabel = formatDayDate(0),
+                dayLabel = day3Date,
                 cards = uiState.day3Cards,
                 isAuthenticated = uiState.isAuthenticated,
                 onCardClick = { mealType ->
@@ -293,14 +321,27 @@ fun FridgeHomeScreen(
             )
         }
     }
+
+    if (uiState.showTemperatureAlarmDialog) {
+        TemperatureAlarmDialog(
+            temperature = uiState.temperature,
+            lowTemperature = uiState.tempAlarmLow,
+            highTemperature = uiState.tempAlarmHigh,
+            onClose = viewModel::dismissTemperatureAlarm,
+        )
+    }
 }
 
 @Composable
-private fun TemperatureCircle(temperature: Float?, isTemperatureAlarm: Boolean) {
-    val gradientColors = if (isTemperatureAlarm) {
-        listOf(TempAlarmStart, TempAlarmEnd)
-    } else {
-        listOf(TempCircleGradientStart, TempCircleGradientEnd)
+private fun TemperatureCircle(
+    temperature: Float?,
+    isTemperatureAlarm: Boolean,
+    isTemperatureSensorFault: Boolean,
+) {
+    val gradientColors = when {
+        isTemperatureAlarm -> listOf(TempAlarmStart, TempAlarmEnd)
+        isTemperatureSensorFault -> listOf(Color(0xFFB45309), Color(0xFFDC2626))
+        else -> listOf(TempCircleGradientStart, TempCircleGradientEnd)
     }
 
     val tempText = when {
@@ -309,7 +350,11 @@ private fun TemperatureCircle(temperature: Float?, isTemperatureAlarm: Boolean) 
         else -> "%.1f".format(temperature)
     }
     val unitText = if (temperature == null) "" else "°C"
-    val labelText = if (temperature == null) "温度获取中..." else "冰箱温度"
+    val labelText = when {
+        isTemperatureSensorFault -> "传感器故障"
+        temperature == null -> "温度不可用"
+        else -> "冰箱温度"
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -349,7 +394,7 @@ private fun TemperatureCircle(temperature: Float?, isTemperatureAlarm: Boolean) 
                         fontSize = unitFontSize,
                         fontWeight = FontWeight.Medium,
                         color = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.padding(top = with(density) { (circleSize * 0.04f).roundToPx() }.dp),
+                        modifier = Modifier.padding(top = circleSize * 0.04f),
                     )
                 }
                 Text(
@@ -360,6 +405,53 @@ private fun TemperatureCircle(temperature: Float?, isTemperatureAlarm: Boolean) 
             }
         }
     }
+}
+
+@Composable
+private fun TemperatureAlarmDialog(
+    temperature: Float?,
+    lowTemperature: Float,
+    highTemperature: Float,
+    onClose: () -> Unit,
+) {
+    val details = temperature?.let {
+        "当前温度为 %.1f°C，正常范围为 %.1f°C 至 %.1f°C。"
+            .format(it, lowTemperature, highTemperature)
+    } ?: "冰箱温度超出正常范围。"
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+            )
+        },
+        title = {
+            Text(
+                text = "温度异常",
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = { Text(details) },
+        confirmButton = {
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color(0xFFB91C1C),
+                ),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text("关闭", fontWeight = FontWeight.Bold)
+            }
+        },
+        shape = RoundedCornerShape(8.dp),
+        containerColor = Color(0xFFB91C1C),
+        iconContentColor = Color.White,
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+    )
 }
 
 @Composable
@@ -451,13 +543,13 @@ private fun DayColumn(
 ) {
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             text = dayLabel,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
             color = Color.White,
         )
 
@@ -493,44 +585,46 @@ private fun MealStatusCard(
         SampleStatus.WAITING -> CardWaiting
         SampleStatus.STORING -> CardStoring
         SampleStatus.WAITING_DISPOSE -> CardDispose
+        SampleStatus.DISPOSED -> CardDisposed
     }
 
     val textColor = when (status) {
         SampleStatus.WAITING -> Color(0xFF374151)
         SampleStatus.STORING -> Color.White
         SampleStatus.WAITING_DISPOSE -> Color.White
+        SampleStatus.DISPOSED -> Color.White
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(cardBg)
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Box(
                 modifier = Modifier
-                    .size(32.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(tagColor),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = tagText,
-                    fontSize = 10.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
                 )
             }
             Text(
                 text = status.displayName,
-                fontSize = 12.sp,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 color = textColor,
             )
@@ -541,5 +635,24 @@ private fun MealStatusCard(
 private fun formatDayDate(dayOffsetFromToday: Int): String {
     val calendar = Calendar.getInstance()
     calendar.add(Calendar.DAY_OF_MONTH, dayOffsetFromToday)
+    return SimpleDateFormat("M月d日", Locale.getDefault()).format(calendar.time)
+}
+
+/**
+ * 基于baseDate计算显示日期
+ * @param baseDate 基准日期（毫秒时间戳），即今天00:00
+ * @param offset 相对于baseDate的偏移天数（0=今天，1=明天，2=后天）
+ */
+private fun formatDayDateFromBaseDate(baseDate: Long, offset: Int): String {
+    if (baseDate <= 0L) {
+        // baseDate未初始化时使用今天
+        val calendar = Calendar.getInstance()
+        calendar.add(Calendar.DAY_OF_MONTH, offset)
+        return SimpleDateFormat("M月d日", Locale.getDefault()).format(calendar.time)
+    }
+    val calendar = Calendar.getInstance().apply {
+        timeInMillis = baseDate
+        add(Calendar.DAY_OF_MONTH, offset)
+    }
     return SimpleDateFormat("M月d日", Locale.getDefault()).format(calendar.time)
 }

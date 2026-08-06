@@ -11,6 +11,7 @@ sealed class Screen(val route: String) {
             "sample_detail/${Uri.encode(mealType)}/$dayOffset"
     }
     object AddSample : Screen("add_sample")
+    object AddSampleScan : Screen("add_sample_scan")
     object Settings : Screen("settings")
     object FaceEnroll : Screen("face_enroll/{userId}") {
         fun createRoute(userId: Int) = "face_enroll/$userId"

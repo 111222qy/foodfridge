@@ -7,6 +7,7 @@ import com.foodfridge.BuildConfig
 import com.foodfridge.data.hardware.HardwareManager
 import com.foodfridge.data.local.UserPreferencesRepository
 import com.foodfridge.di.AppEntryPoint
+import com.foodfridge.util.FileLoggingTree
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -37,9 +38,15 @@ class FoodFridgeApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        if (BuildConfig.DEBUG && Timber.forest().isEmpty()) {
-            Timber.plant(Timber.DebugTree())
-            Timber.i("FoodFridgeApp started")
+        if (Timber.forest().isEmpty()) {
+            try {
+                Timber.plant(Timber.DebugTree())
+                Timber.plant(FileLoggingTree(this))
+                Timber.i("FoodFridgeApp started")
+            } catch (e: Exception) {
+                // 日志树初始化失败不应导致应用崩溃
+                android.util.Log.e("FoodFridgeApp", "Failed to plant logging trees", e)
+            }
         }
 
         // 每次新进程启动时清除登录标记，确保强制退出/杀进程后必须重新认证。
@@ -76,7 +83,7 @@ class FoodFridgeApp : Application() {
     }
 
     private fun lockDoorAndLightOff() {
-        // 统一通过 HardwareManager 操作硬件，避免绕过抽象层直接调用 ApiManager。
+        // 统一通过 HardwareManager 操作硬件。
         try {
             hardwareManager.lockDoor()
             hardwareManager.lightOff()

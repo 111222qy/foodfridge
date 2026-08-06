@@ -9,6 +9,7 @@ data class SamplingUploadData(
     val device_id: String,
     val timestamp: Long,
     val dish_name: String,
+    val meal_type: String,
     val stall_name: String? = null,
     val operator_name: String? = null,
     val weight: Float,

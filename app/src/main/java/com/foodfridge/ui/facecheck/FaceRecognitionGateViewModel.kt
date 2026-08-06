@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.foodfridge.domain.auth.FaceAuthenticationPolicy
 import com.foodfridge.domain.face.FaceEngine
 import com.foodfridge.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -27,14 +28,13 @@ data class FaceRecognitionGateUiState(
     val matchedUserId: Int? = null,
 )
 
-private const val FACE_GATE_AUTO_SCAN_INTERVAL_MS = 500L
+private const val FACE_GATE_AUTO_SCAN_INTERVAL_MS = 300L
 
 @HiltViewModel
 class FaceRecognitionGateViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val faceEngine: FaceEngine,
     private val userRepository: UserRepository,
-    private val userPrefs: com.foodfridge.data.local.UserPreferencesRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FaceRecognitionGateUiState())
@@ -42,6 +42,7 @@ class FaceRecognitionGateViewModel @Inject constructor(
     private var lastAutoScanAtMs: Long = 0L
     // 防止识别成功后继续处理帧，以及返回键时的重复验证
     private val isVerificationCompleted = AtomicBoolean(false)
+    private val isFrameProcessing = AtomicBoolean(false)
 
     init {
         viewModelScope.launch(Dispatchers.Default) {
@@ -58,7 +59,11 @@ class FaceRecognitionGateViewModel @Inject constructor(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
-    fun verifyAndContinue(frame: Bitmap?, isAutoScan: Boolean = false) {
+    fun verifyAndContinue(
+        frame: Bitmap?,
+        isAutoScan: Boolean = false,
+        allowedRoles: Set<String>? = null,
+    ) {
         // 识别已完成或正在返回，不再接受新帧
         if (isVerificationCompleted.get()) {
             Log.d("FaceGateViewModel", "Verification already completed, ignoring frame")
@@ -92,13 +97,25 @@ class FaceRecognitionGateViewModel @Inject constructor(
             lastAutoScanAtMs = now
         }
 
-        // Process on background thread
+        if (!isFrameProcessing.compareAndSet(false, true)) {
+            runCatching { frame.recycle() }
+            return
+        }
+
         viewModelScope.launch(Dispatchers.Default) {
-            processFrame(frame, isAutoScan)
+            try {
+                processFrame(frame, isAutoScan, allowedRoles)
+            } finally {
+                isFrameProcessing.set(false)
+            }
         }
     }
 
-    private suspend fun processFrame(frame: Bitmap, isAutoScan: Boolean) {
+    private suspend fun processFrame(
+        frame: Bitmap,
+        isAutoScan: Boolean,
+        allowedRoles: Set<String>?,
+    ) {
         // 再次检查，防止已进入队列的任务在识别成功后继续执行
         if (isVerificationCompleted.get()) {
             Log.d("FaceGateViewModel", "processFrame: verification already completed, discarding frame")
@@ -106,27 +123,8 @@ class FaceRecognitionGateViewModel @Inject constructor(
             return
         }
 
-        // Ensure frame is ARGB_8888
-        val snapshot = runCatching {
-            if (frame.config != Bitmap.Config.ARGB_8888) {
-                Log.d("FaceGateViewModel", "Converting frame to ARGB_8888")
-                frame.copy(Bitmap.Config.ARGB_8888, false)
-            } else {
-                frame.copy(Bitmap.Config.ARGB_8888, false)
-            }
-        }.getOrNull()
-
-        runCatching { frame.recycle() }
-
-        if (snapshot == null) {
-            Log.e("FaceGateViewModel", "Failed to create snapshot")
-            if (!isAutoScan) {
-                withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(errorMessage = "画面获取失败，请重试") }
-                }
-            }
-            return
-        }
+        // JNI 同时支持 RGB_565 和 ARGB_8888，直接转移当前帧所有权，避免全帧复制。
+        val snapshot = frame
 
         try {
             Log.d("FaceGateViewModel", "Processing frame: ${snapshot.width}x${snapshot.height}, config=${snapshot.config}")
@@ -156,14 +154,34 @@ class FaceRecognitionGateViewModel @Inject constructor(
                 return
             }
 
-            processVerifyRequest(snapshot, isAutoScan)
+            processVerifyRequest(snapshot, isAutoScan, allowedRoles)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.d("FaceGateViewModel", "Frame processing cancelled because recognition page exited")
+            runCatching { snapshot.recycle() }
+            throw e
+        } catch (oom: OutOfMemoryError) {
+            Log.e("FaceGateViewModel", "Face processing ran out of memory", oom)
+            runCatching { snapshot.recycle() }
+            withContext(Dispatchers.Main) {
+                _uiState.update {
+                    it.copy(
+                        isRecognizing = false,
+                        errorMessage = if (isAutoScan) null else "设备内存不足，请稍后重试",
+                        message = "识别资源繁忙，持续扫描中...",
+                    )
+                }
+            }
         } catch (e: Exception) {
             Log.e("FaceGateViewModel", "Error processing frame", e)
             runCatching { snapshot.recycle() }
         }
     }
 
-    private suspend fun processVerifyRequest(snapshot: Bitmap, isAutoScan: Boolean) {
+    private suspend fun processVerifyRequest(
+        snapshot: Bitmap,
+        isAutoScan: Boolean,
+        allowedRoles: Set<String>?,
+    ) {
         // 进入识别前再次检查，防止排队任务在成功后继续执行
         if (isVerificationCompleted.get()) {
             Log.d("FaceGateViewModel", "processVerifyRequest: verification already completed, discarding frame")
@@ -192,7 +210,7 @@ class FaceRecognitionGateViewModel @Inject constructor(
 
             runCatching { snapshot.recycle() }
 
-            handleRecognitionResult(result, isAutoScan)
+            handleRecognitionResult(result, isAutoScan, allowedRoles)
 
         } catch (e: kotlinx.coroutines.CancellationException) {
             // 协程正常取消（页面离开），静默处理，不更新UI
@@ -214,7 +232,11 @@ class FaceRecognitionGateViewModel @Inject constructor(
         }
     }
 
-    private suspend fun handleRecognitionResult(result: com.foodfridge.domain.face.FaceRecognitionResult?, isAutoScan: Boolean) {
+    private suspend fun handleRecognitionResult(
+        result: com.foodfridge.domain.face.FaceRecognitionResult?,
+        isAutoScan: Boolean,
+        allowedRoles: Set<String>?,
+    ) {
         // 防止已进入队列的任务重复处理成功结果
         if (isVerificationCompleted.get()) {
             Log.d("FaceGateViewModel", "handleRecognitionResult: verification already completed, ignoring result")
@@ -245,15 +267,16 @@ class FaceRecognitionGateViewModel @Inject constructor(
 
         if (userFromDb == null) {
             Log.w("FaceGateViewModel", "User not found in DB: ${result.userId} (face cache has this user but DB does not)")
+            faceEngine.removeUserFromCache(result.userId)
             withContext(Dispatchers.Main) {
                 _uiState.update {
                     it.copy(
                         isRecognizing = false,
-                        errorMessage = if (isAutoScan) null else "识别到的人员在数据库中不存在",
+                        errorMessage = if (isAutoScan) null else "未匹配到已注册人员",
                         message = if (isAutoScan) {
-                            "人员数据异常，持续扫描中..."
+                            "未识别到已注册人员，持续扫描中..."
                         } else {
-                            "识别失败，请联系管理员"
+                            "识别失败，请重新对准摄像头"
                         },
                     )
                 }
@@ -281,6 +304,27 @@ class FaceRecognitionGateViewModel @Inject constructor(
 
         val matched = userFromDb
 
+        if (allowedRoles != null && matched.role !in allowedRoles) {
+            val requiredRoles = allowedRoles
+                .map(FaceAuthenticationPolicy::displayName)
+                .joinToString("或")
+                .ifBlank { "其他人员" }
+            Log.i(
+                "FaceGateViewModel",
+                "Role rejected: user=${matched.fullName}, role=${matched.role}, allowed=$allowedRoles",
+            )
+            withContext(Dispatchers.Main) {
+                _uiState.update {
+                    it.copy(
+                        isRecognizing = false,
+                        errorMessage = null,
+                        message = "当前需要${requiredRoles}认证，请更换人员",
+                    )
+                }
+            }
+            return
+        }
+
         Log.i("FaceGateViewModel", "Recognition successful: ${matched.fullName}")
 
         // CAS：确保只有一个任务能进入成功处理流程，防止并发任务重复更新UI
@@ -288,18 +332,6 @@ class FaceRecognitionGateViewModel @Inject constructor(
             Log.d("FaceGateViewModel", "Another task already completed verification, ignoring duplicate result")
             return
         }
-
-        userPrefs.saveAuthTokens(
-            accessToken = "local_${matched.id}",
-            tokenType = "Bearer",
-            wsToken = "local_${matched.id}",
-            expiresInSeconds = 86400,
-        )
-        userPrefs.saveUserSession(
-            userId = matched.id.toString(),
-            userName = matched.fullName,
-            lastLoginPassword = matched.password,
-        )
 
         withContext(Dispatchers.Main) {
             _uiState.update {

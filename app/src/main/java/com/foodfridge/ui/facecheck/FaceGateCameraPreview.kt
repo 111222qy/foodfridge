@@ -6,6 +6,7 @@ import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.annotation.OptIn
@@ -40,12 +41,15 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+private const val FACE_CAMERA_FRAME_INTERVAL_MS = 250L
+
 @Composable
 fun FaceGateCameraPreview(
     onFrame: (Bitmap) -> Unit,
     onCameraError: (String?) -> Unit = {},
     onCameraBoundChanged: (Boolean) -> Unit = {},
     enabled: Boolean = true,
+    highQuality: Boolean = false,
     cameraCoordinator: CameraCoordinator? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -76,8 +80,11 @@ fun FaceGateCameraPreview(
     DisposableEffect(hasPermission, enabled) {
         var cameraProvider: ProcessCameraProvider? = null
         var cameraExecutor: ExecutorService? = null
+        var preview: Preview? = null
         var imageAnalysis: ImageAnalysis? = null
+        var coordinatorAcquired = false
         var isBound = false
+        var lastAnalyzedAtMs = 0L
 
         if (hasPermission && enabled) {
             Log.d("FaceGateCamera", "Starting camera setup")
@@ -88,49 +95,64 @@ fun FaceGateCameraPreview(
                     Log.w("FaceGateCamera", "Camera acquisition denied by coordinator, current purpose=${cameraCoordinator?.getCurrentPurpose()}")
                     throw IllegalStateException("无法获取摄像头，当前被其他功能占用")
                 }
+                coordinatorAcquired = true
 
                 cameraExecutor = Executors.newSingleThreadExecutor()
                 cameraProvider = ProcessCameraProvider.getInstance(context).get()
 
-                // 释放之前的摄像头绑定（确保从首页隐藏预览切过来时不会冲突）
-                cameraProvider.unbindAll()
-
-                val preview = Preview.Builder()
+                preview = Preview.Builder()
                     .build()
                     .apply {
                         setSurfaceProvider(previewView.surfaceProvider)
                     }
 
                 imageAnalysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(640, 480))
+                    .setTargetResolution(if (highQuality) Size(640, 480) else Size(320, 240))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
 
                 imageAnalysis.setAnalyzer(cameraExecutor!!) { imageProxy ->
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastAnalyzedAtMs < FACE_CAMERA_FRAME_INTERVAL_MS) {
+                        imageProxy.close()
+                        return@setAnalyzer
+                    }
+                    lastAnalyzedAtMs = now
+
+                    var bitmap: Bitmap? = null
                     try {
-                        val bitmap = convertToBitmap(imageProxy)
+                        bitmap = convertToBitmap(imageProxy, highQuality)
                         if (bitmap != null && !bitmap.isRecycled) {
                             try {
                                 onFrameRef.value(bitmap)
+                                bitmap = null
                             } catch (e: Exception) {
                                 Log.e("FaceGateCamera", "Frame processing error", e)
-                                if (!bitmap.isRecycled) {
-                                    runCatching { bitmap.recycle() }
-                                }
                             }
+                        } else {
+                            Log.w("FaceGateCamera", "Bitmap conversion returned null or recycled")
                         }
+                    } catch (oom: OutOfMemoryError) {
+                        Log.e("FaceGateCamera", "Analyzer ran out of memory; dropping frame", oom)
                     } catch (e: Exception) {
                         Log.e("FaceGateCamera", "Analyzer error", e)
                     } finally {
+                        if (bitmap != null && !bitmap.isRecycled) {
+                            runCatching { bitmap.recycle() }
+                        }
                         imageProxy.close()
                     }
                 }
 
-                // 优先前置摄像头，失败则回退到后置摄像头
+                // 使用 CameraCoordinator 推荐的人脸识别摄像头
+                val faceCameraSelector = cameraCoordinator?.getRecommendedFaceCameraSelector()
+                    ?: CameraSelector.DEFAULT_FRONT_CAMERA
+                Log.i("FaceGateCamera", "人脸识别使用摄像头: $faceCameraSelector")
+
                 val boundCamera = tryBindCameraSelector(
                     cameraProvider,
                     lifecycleOwner,
-                    listOf(CameraSelector.DEFAULT_FRONT_CAMERA, CameraSelector.DEFAULT_BACK_CAMERA),
+                    listOf(faceCameraSelector, CameraSelector.DEFAULT_BACK_CAMERA),
                     preview,
                     imageAnalysis,
                 )
@@ -157,17 +179,21 @@ fun FaceGateCameraPreview(
             try {
                 // 先清除分析器，停止接收新帧
                 imageAnalysis?.clearAnalyzer()
-                // 解绑所有用例
-                cameraProvider?.unbindAll()
-                // 温和关闭线程池，等待现有任务完成
-                cameraExecutor?.shutdown()
-                val terminated = cameraExecutor?.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS) ?: true
-                if (!terminated) {
-                    Log.w("FaceGateCamera", "Executor did not terminate in 1s, forcing shutdown")
-                    cameraExecutor?.shutdownNow()
+
+                // 只解绑当前预览拥有的用例，不能使用 unbindAll() 影响另一个页面的新相机。
+                val provider = cameraProvider
+                val previewUseCase = preview
+                val analysisUseCase = imageAnalysis
+                if (provider != null && previewUseCase != null && analysisUseCase != null) {
+                    provider.unbind(previewUseCase, analysisUseCase)
                 }
-                // 通过 CameraCoordinator 释放摄像头
-                cameraCoordinator?.release(CameraCoordinator.CameraPurpose.FACE_RECOGNITION)
+
+                cameraExecutor?.shutdownNow()
+
+                // 未取得租约的初始 Effect 不能释放其他预览的租约。
+                if (coordinatorAcquired) {
+                    cameraCoordinator?.release(CameraCoordinator.CameraPurpose.FACE_RECOGNITION)
+                }
             } catch (e: Exception) {
                 Log.e("FaceGateCamera", "Error releasing camera", e)
             }
@@ -198,7 +224,8 @@ private fun tryBindCameraSelector(
     for (selector in selectors) {
         try {
             val camera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
-            Log.d("FaceGateCamera", "Bound camera with selector: $selector")
+            val cameraId = Camera2CameraInfo.from(camera.cameraInfo).cameraId
+            Log.i("FaceGateCamera", "摄像头绑定成功: cameraId=$cameraId, selector=$selector")
             // 启用连续自动对焦，提升 50cm 距离的人脸清晰度
             try {
                 val camera2Control = Camera2CameraControl.from(camera.cameraControl)
@@ -220,30 +247,11 @@ private fun tryBindCameraSelector(
     return null
 }
 
-private fun calculateAverageBrightness(bitmap: Bitmap): Double {
-    return try {
-        var sum = 0L
-        var count = 0
-        val stepX = maxOf(1, bitmap.width / 10)
-        val stepY = maxOf(1, bitmap.height / 10)
-        for (y in 0 until bitmap.height step stepY) {
-            for (x in 0 until bitmap.width step stepX) {
-                val pixel = bitmap.getPixel(x, y)
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-                sum += (r + g + b) / 3
-                count++
-            }
-        }
-        if (count == 0) 0.0 else sum.toDouble() / count
-    } catch (e: Exception) {
-        -1.0
-    }
-}
-
 @OptIn(ExperimentalGetImage::class)
-private fun convertToBitmap(imageProxy: ImageProxy): Bitmap? {
+private fun convertToBitmap(imageProxy: ImageProxy, highQuality: Boolean = false): Bitmap? {
+    var outputStream: ByteArrayOutputStream? = null
+    var bitmap: Bitmap? = null
+
     return try {
         val image = imageProxy.image ?: run {
             Log.w("FaceGateCamera", "Image is null")
@@ -258,7 +266,6 @@ private fun convertToBitmap(imageProxy: ImageProxy): Bitmap? {
             return null
         }
 
-        // Use the safe JPEG conversion approach
         val yBuffer = image.planes[0].buffer
         val uBuffer = image.planes[1].buffer
         val vBuffer = image.planes[2].buffer
@@ -272,10 +279,8 @@ private fun convertToBitmap(imageProxy: ImageProxy): Bitmap? {
             return null
         }
 
-        // Create NV21 byte array
         val nv21 = ByteArray(width * height * 3 / 2)
 
-        // Copy Y plane
         val yRowStride = image.planes[0].rowStride
         if (yRowStride == width) {
             yBuffer.get(nv21, 0, ySize)
@@ -292,14 +297,11 @@ private fun convertToBitmap(imageProxy: ImageProxy): Bitmap? {
             }
         }
 
-        // Copy UV planes
         val uvPixelStride = image.planes[1].pixelStride
         if (uvPixelStride == 1) {
-            // Planar format: copy V then U
             vBuffer.get(nv21, width * height, vSize)
             uBuffer.get(nv21, width * height + vSize, uSize)
         } else {
-            // Semi-planar format: interleave V and U
             val vBytes = ByteArray(vSize)
             val uBytes = ByteArray(uSize)
             vBuffer.get(vBytes)
@@ -315,44 +317,72 @@ private fun convertToBitmap(imageProxy: ImageProxy): Bitmap? {
             }
         }
 
-        // Convert NV21 to JPEG then to Bitmap
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val outputStream = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, outputStream)
+        outputStream = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(Rect(0, 0, width, height), if (highQuality) 90 else 60, outputStream)
 
         val jpegBytes = outputStream.toByteArray()
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+        outputStream.close()
+        outputStream = null
+
+        val targetWidth = if (highQuality) 640 else 320
+        val targetHeight = if (highQuality) 480 else 240
+
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        try {
+            bitmap = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, options)
+        } catch (e: OutOfMemoryError) {
+            Log.e("FaceGateCamera", "OOM while decoding bitmap, trying smaller size", e)
+            val smallerOptions = android.graphics.BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = 2
+            }
+            try {
+                bitmap = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, smallerOptions)
+            } catch (e2: OutOfMemoryError) {
+                Log.e("FaceGateCamera", "Still OOM even with inSampleSize=2", e2)
+                return null
+            }
+        }
 
         if (bitmap == null) {
             Log.e("FaceGateCamera", "Failed to decode JPEG to bitmap")
             return null
         }
 
-        // Apply rotation for front camera
+        // 处理旋转
         val rotation = imageProxy.imageInfo.rotationDegrees
-        Log.d("FaceGateCamera", "ImageProxy rotation: $rotation")
-        val matrix = Matrix()
-
         if (rotation != 0) {
+            val matrix = Matrix()
             matrix.postRotate(rotation.toFloat())
-        }
-        // Note: removed horizontal flip for face detection reliability
-
-        val transformedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        bitmap.recycle()
-
-        // Ensure ARGB_8888 format
-        val finalBitmap = if (transformedBitmap.config == Bitmap.Config.ARGB_8888) {
-            transformedBitmap
-        } else {
-            val argbBitmap = transformedBitmap.copy(Bitmap.Config.ARGB_8888, false)
-            transformedBitmap.recycle()
-            argbBitmap
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            bitmap.recycle()
+            bitmap = rotated
         }
 
-        finalBitmap
+        // 显式缩放到目标尺寸
+        if (bitmap.width != targetWidth || bitmap.height != targetHeight) {
+            val scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+            bitmap.recycle()
+            bitmap = scaled
+        }
+
+        bitmap
+    } catch (oom: OutOfMemoryError) {
+        if (bitmap?.isRecycled == false) {
+            runCatching { bitmap.recycle() }
+        }
+        Log.e("FaceGateCamera", "Image conversion ran out of memory", oom)
+        null
     } catch (e: Exception) {
+        if (bitmap?.isRecycled == false) {
+            runCatching { bitmap.recycle() }
+        }
         Log.e("FaceGateCamera", "Image conversion failed", e)
         null
+    } finally {
+        outputStream?.close()
     }
 }

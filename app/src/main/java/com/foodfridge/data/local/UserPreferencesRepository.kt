@@ -4,11 +4,16 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.foodfridge.data.hardware.ModbusByteOrder
+import com.foodfridge.data.hardware.ModbusTemperatureValueMode
+import com.foodfridge.data.hardware.ModbusValueType
+import com.foodfridge.data.hardware.ModbusWordOrder
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +33,29 @@ data class AuthTokenBundle(
     val refreshTokenExpiresAt: Long?,
 )
 
+data class TemperaturePreferenceSnapshot(
+    val thermalZoneOverride: String?,
+    val thermalZoneScale: Int,
+    val modbusDevicePath: String?,
+    val modbusBaudRate: Int,
+    val modbusParity: Int,
+    val modbusStopBits: Int,
+    val modbusSlaveAddress: Int,
+    val modbusFunctionCode: Int,
+    val modbusRegisterAddress: Int,
+    val modbusRegisterCount: Int,
+    val modbusTemperatureRegisterOffset: Int,
+    val modbusValueType: ModbusValueType,
+    val modbusByteOrder: ModbusByteOrder,
+    val modbusWordOrder: ModbusWordOrder,
+    val modbusValueMode: ModbusTemperatureValueMode,
+    val modbusTemperatureScale: Float,
+    val modbusCalibrationOffset: Float,
+    val modbusEnabled: Boolean,
+)
+
+typealias ModbusPreferenceSnapshot = TemperaturePreferenceSnapshot
+
 @Singleton
 class UserPreferencesRepository @Inject constructor(
     @ApplicationContext private val context: Context
@@ -46,12 +74,30 @@ class UserPreferencesRepository @Inject constructor(
         val DUAL_FACE_AUTH_ENABLED = booleanPreferencesKey("dual_face_auth_enabled")
         val ADMIN_PASSWORD = stringPreferencesKey("admin_password")
 
-        // 温度传感器覆盖配置（现场调试使用）
         val THERMAL_ZONE_OVERRIDE = stringPreferencesKey("thermal_zone_override")
         val THERMAL_ZONE_SCALE = intPreferencesKey("thermal_zone_scale")
 
         // 平台 API 地址（可在设置页修改）
         val API_BASE_URL = stringPreferencesKey("api_base_url")
+        val API_DEVICE_KEY = stringPreferencesKey("api_device_key")
+
+        // Modbus 温度传感器配置
+        val MODBUS_DEVICE_PATH = stringPreferencesKey("modbus_device_path")
+        val MODBUS_BAUD_RATE = intPreferencesKey("modbus_baud_rate")
+        val MODBUS_PARITY = intPreferencesKey("modbus_parity")
+        val MODBUS_STOP_BITS = intPreferencesKey("modbus_stop_bits")
+        val MODBUS_SLAVE_ADDRESS = intPreferencesKey("modbus_slave_address")
+        val MODBUS_FUNCTION_CODE = intPreferencesKey("modbus_function_code")
+        val MODBUS_REGISTER_ADDRESS = intPreferencesKey("modbus_register_address")
+        val MODBUS_REGISTER_COUNT = intPreferencesKey("modbus_register_count")
+        val MODBUS_TEMPERATURE_REGISTER_OFFSET = intPreferencesKey("modbus_temperature_register_offset")
+        val MODBUS_VALUE_TYPE = stringPreferencesKey("modbus_value_type")
+        val MODBUS_BYTE_ORDER = stringPreferencesKey("modbus_byte_order")
+        val MODBUS_WORD_ORDER = stringPreferencesKey("modbus_word_order")
+        val MODBUS_VALUE_MODE = stringPreferencesKey("modbus_value_mode")
+        val MODBUS_TEMPERATURE_SCALE = floatPreferencesKey("modbus_temperature_scale")
+        val MODBUS_CALIBRATION_OFFSET = floatPreferencesKey("modbus_calibration_offset")
+        val MODBUS_ENABLED = booleanPreferencesKey("modbus_enabled")
     }
 
     @Volatile
@@ -86,14 +132,10 @@ class UserPreferencesRepository @Inject constructor(
         }
 
     val thermalZoneOverride: Flow<String?> = context.dataStore.data
-        .map { preferences ->
-            preferences[THERMAL_ZONE_OVERRIDE]
-        }
+        .map { preferences -> preferences[THERMAL_ZONE_OVERRIDE] }
 
     val thermalZoneScale: Flow<Int> = context.dataStore.data
-        .map { preferences ->
-            preferences[THERMAL_ZONE_SCALE] ?: -1
-        }
+        .map { preferences -> preferences[THERMAL_ZONE_SCALE] ?: -1 }
 
     /** 平台 API 地址，为空时使用 BuildConfig 默认值。 */
     val apiBaseUrl: Flow<String?> = context.dataStore.data
@@ -101,12 +143,102 @@ class UserPreferencesRepository @Inject constructor(
             preferences[API_BASE_URL]
         }
 
-    suspend fun saveApiBaseUrl(url: String?) {
+    val apiDeviceKey: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[API_DEVICE_KEY]?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+    /** 单个 DataStore 快照，避免一次保存产生新旧字段混合的临时串口配置。 */
+    val temperaturePreferenceSnapshot: Flow<TemperaturePreferenceSnapshot> = context.dataStore.data
+        .map { preferences ->
+            TemperaturePreferenceSnapshot(
+                thermalZoneOverride = preferences[THERMAL_ZONE_OVERRIDE],
+                thermalZoneScale = preferences[THERMAL_ZONE_SCALE] ?: -1,
+                modbusDevicePath = preferences[MODBUS_DEVICE_PATH],
+                modbusBaudRate = preferences[MODBUS_BAUD_RATE] ?: 115200,
+                modbusParity = preferences[MODBUS_PARITY] ?: 0,
+                modbusStopBits = preferences[MODBUS_STOP_BITS] ?: 1,
+                modbusSlaveAddress = preferences[MODBUS_SLAVE_ADDRESS] ?: 0xFF,
+                modbusFunctionCode = preferences[MODBUS_FUNCTION_CODE] ?: 0x03,
+                modbusRegisterAddress = preferences[MODBUS_REGISTER_ADDRESS] ?: 0x0000,
+                modbusRegisterCount = preferences[MODBUS_REGISTER_COUNT] ?: 2,
+                modbusTemperatureRegisterOffset =
+                    preferences[MODBUS_TEMPERATURE_REGISTER_OFFSET] ?: 1,
+                modbusValueType = preferences.enumValueOrDefault(
+                    MODBUS_VALUE_TYPE,
+                    ModbusValueType.INT16,
+                ),
+                modbusByteOrder = preferences.enumValueOrDefault(
+                    MODBUS_BYTE_ORDER,
+                    ModbusByteOrder.BIG_ENDIAN,
+                ),
+                modbusWordOrder = preferences.enumValueOrDefault(
+                    MODBUS_WORD_ORDER,
+                    ModbusWordOrder.HIGH_WORD_FIRST,
+                ),
+                modbusValueMode = preferences.enumValueOrDefault(
+                    MODBUS_VALUE_MODE,
+                    ModbusTemperatureValueMode.DIRECT_CELSIUS,
+                ),
+                modbusTemperatureScale = preferences[MODBUS_TEMPERATURE_SCALE] ?: 0.1f,
+                modbusCalibrationOffset = preferences[MODBUS_CALIBRATION_OFFSET] ?: 0f,
+                modbusEnabled = preferences[MODBUS_ENABLED] ?: false,
+            )
+        }
+
+    val modbusPreferenceSnapshot: Flow<ModbusPreferenceSnapshot> = temperaturePreferenceSnapshot
+
+    suspend fun saveModbusConfig(
+        devicePath: String?,
+        baudRate: Int,
+        parity: Int,
+        stopBits: Int,
+        slaveAddress: Int,
+        functionCode: Int,
+        registerAddress: Int,
+        registerCount: Int,
+        temperatureRegisterOffset: Int,
+        valueType: ModbusValueType,
+        byteOrder: ModbusByteOrder,
+        wordOrder: ModbusWordOrder,
+        valueMode: ModbusTemperatureValueMode,
+        temperatureScale: Float,
+        calibrationOffset: Float,
+        enabled: Boolean,
+    ) {
+        context.dataStore.edit { preferences ->
+            if (devicePath.isNullOrBlank()) {
+                preferences.remove(MODBUS_DEVICE_PATH)
+            } else {
+                preferences[MODBUS_DEVICE_PATH] = devicePath.trim()
+            }
+            preferences[MODBUS_BAUD_RATE] = baudRate
+            preferences[MODBUS_PARITY] = parity
+            preferences[MODBUS_STOP_BITS] = stopBits
+            preferences[MODBUS_SLAVE_ADDRESS] = slaveAddress
+            preferences[MODBUS_FUNCTION_CODE] = functionCode
+            preferences[MODBUS_REGISTER_ADDRESS] = registerAddress
+            preferences[MODBUS_REGISTER_COUNT] = registerCount
+            preferences[MODBUS_TEMPERATURE_REGISTER_OFFSET] = temperatureRegisterOffset
+            preferences[MODBUS_VALUE_TYPE] = valueType.name
+            preferences[MODBUS_BYTE_ORDER] = byteOrder.name
+            preferences[MODBUS_WORD_ORDER] = wordOrder.name
+            preferences[MODBUS_VALUE_MODE] = valueMode.name
+            preferences[MODBUS_TEMPERATURE_SCALE] = temperatureScale
+            preferences[MODBUS_CALIBRATION_OFFSET] = calibrationOffset
+            preferences[MODBUS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun saveApiConnection(url: String?, apiDeviceKey: String?) {
         context.dataStore.edit { preferences ->
             if (url.isNullOrBlank()) {
                 preferences.remove(API_BASE_URL)
             } else {
                 preferences[API_BASE_URL] = url.trimEnd('/')
+            }
+            if (apiDeviceKey != null) {
+                preferences[API_DEVICE_KEY] = apiDeviceKey.trim()
             }
         }
     }
@@ -117,7 +249,7 @@ class UserPreferencesRepository @Inject constructor(
                 preferences.remove(THERMAL_ZONE_OVERRIDE)
                 preferences.remove(THERMAL_ZONE_SCALE)
             } else {
-                preferences[THERMAL_ZONE_OVERRIDE] = path
+                preferences[THERMAL_ZONE_OVERRIDE] = path.trim()
                 preferences[THERMAL_ZONE_SCALE] = scale
             }
         }
@@ -203,7 +335,7 @@ class UserPreferencesRepository @Inject constructor(
                 preferences[REFRESH_TOKEN] = refreshToken
             }
 
-            val normalizedWsToken = wsToken ?: accessToken
+            val normalizedWsToken = wsToken?.takeIf { it.isNotBlank() } ?: accessToken
             preferences[WS_TOKEN] = normalizedWsToken
 
             if (expiresInSeconds == null) {
@@ -261,7 +393,17 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun clearSession() {
         context.dataStore.edit { preferences ->
-            preferences.clear()
+            // 只清除认证相关数据，保留配置（API地址、Modbus配置、管理员密码等）
+            preferences.remove(IS_LOGGED_IN)
+            preferences.remove(USER_ID)
+            preferences.remove(USER_NAME)
+            preferences.remove(LAST_LOGIN_PASSWORD)
+            preferences.remove(ACCESS_TOKEN)
+            preferences.remove(REFRESH_TOKEN)
+            preferences.remove(WS_TOKEN)
+            preferences.remove(TOKEN_TYPE)
+            preferences.remove(ACCESS_TOKEN_EXPIRES_AT)
+            preferences.remove(REFRESH_TOKEN_EXPIRES_AT)
         }
 
         cachedAuthorizationHeader = null
@@ -274,4 +416,12 @@ class UserPreferencesRepository @Inject constructor(
         val normalizedTokenType = tokenType.trim().ifBlank { "Bearer" }
         return "$normalizedTokenType $normalizedAccessToken"
     }
+}
+
+private inline fun <reified T : Enum<T>> Preferences.enumValueOrDefault(
+    key: Preferences.Key<String>,
+    defaultValue: T,
+): T {
+    val storedValue = this[key] ?: return defaultValue
+    return enumValues<T>().firstOrNull { it.name == storedValue } ?: defaultValue
 }

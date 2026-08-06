@@ -24,6 +24,9 @@ interface FaceEngine {
     suspend fun detectAndRecognize(frame: Bitmap): FaceRecognitionResult?
     suspend fun registerUser(userId: Int, frames: List<Bitmap>): Boolean
     fun refreshUserCache()
+    fun removeUserFromCache(userId: Int) {
+        refreshUserCache()
+    }
     fun release()
 
     /** 检查引擎是否已初始化就绪 */

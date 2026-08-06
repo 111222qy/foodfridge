@@ -43,17 +43,17 @@ import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
-private const val BARCODE_ZOOM_RATIO = 1.5f
-private const val BARCODE_FIXED_FOCUS_ZOOM_RATIO = 1.0f
+
+private const val BARCODE_ZOOM_RATIO = 1.8f
+private const val BARCODE_FIXED_FOCUS_ZOOM_RATIO = 1.4f
 private const val BARCODE_EXPOSURE_COMPENSATION = 2
 private const val AUTO_FOCUS_INTERVAL_MS = 2500L
 
 /**
- * 条形码扫描相机预览组件
+ * 二维码扫描相机预览组件
  *
- * 使用指定摄像头 + ML Kit Barcode Scanning 实时检测条形码
+ * 使用指定摄像头 + ML Kit Barcode Scanning 实时检测二维码
  * 通过 CameraCoordinator 协调摄像头资源，避免与首页人脸检测冲突
  */
 @Composable
@@ -61,7 +61,7 @@ fun BarcodeCameraPreview(
     onBarcodeDetected: (String) -> Unit,
     onCameraError: (String?) -> Unit = {},
     enabled: Boolean = true,
-    cameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+    cameraSelector: CameraSelector? = null, // 如果为null，则使用CameraCoordinator推荐的摄像头
     cameraCoordinator: CameraCoordinator? = null,
     scanKey: Int = 0,
     modifier: Modifier = Modifier,
@@ -71,8 +71,8 @@ fun BarcodeCameraPreview(
 
     var hasPermission by remember { mutableStateOf(false) }
 
-    // scanKey 变化时重置扫描状态，但不触发相机生命周期重组
-    val isScanning = remember(scanKey) { AtomicBoolean(true) }
+    // 扫描控制：由上层 scanKey 控制是否继续扫描
+    var isScanning by remember(scanKey) { mutableStateOf(true) }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -101,8 +101,9 @@ fun BarcodeCameraPreview(
         BarcodeScanning.getClient(options)
     }
 
-    // 相机生命周期：只依赖 hasPermission 和 enabled，不依赖扫描状态
-    DisposableEffect(hasPermission, enabled) {
+    // 相机生命周期：依赖 hasPermission、enabled 和 scanKey
+    // scanKey 变化时（上层要求重新扫描），需要重新创建图像分析器以重置 isScanning 状态
+    DisposableEffect(hasPermission, enabled, scanKey) {
         var cameraProvider: ProcessCameraProvider? = null
         var cameraExecutor: ExecutorService? = null
         var imageAnalysis: ImageAnalysis? = null
@@ -113,13 +114,14 @@ fun BarcodeCameraPreview(
 
         fun buildAnalyzer(): ImageAnalysis.Analyzer {
             return ImageAnalysis.Analyzer { imageProxy ->
-                if (!isScanning.get()) {
+                if (!isScanning) {
                     imageProxy.close()
                     return@Analyzer
                 }
                 processImageProxy(barcodeScanner, imageProxy) { rawValue ->
                     Log.d("BarcodeCamera", "QR detected: $rawValue")
-                    isScanning.set(false)
+                    // 扫描到结果后立即暂停，等待上层决定是否继续
+                    isScanning = false
                     onBarcodeDetectedRef.value(rawValue)
                 }
             }
@@ -181,26 +183,33 @@ fun BarcodeCameraPreview(
 
                 cameraProvider = ProcessCameraProvider.getInstance(context).get()
 
+                // 使用 CameraCoordinator 推荐的扫码摄像头（如果未指定）
+                val actualSelector = cameraSelector ?: cameraCoordinator?.getRecommendedBarcodeCameraSelector()
+                    ?: CameraSelector.DEFAULT_BACK_CAMERA
+                Log.i("BarcodeCamera", "使用的摄像头选择器: $actualSelector (传入=${cameraSelector != null})")
+
                 val selectorsToTry = buildList {
-                    add(cameraSelector)
+                    add(actualSelector)
                     // 外接摄像头回退
                     val external = CameraSelector.Builder()
                         .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
                         .build()
-                    if (cameraSelector != external && cameraCoordinator?.hasExternalCamera() == true) {
+                    if (actualSelector != external && cameraCoordinator?.hasExternalCamera() == true) {
                         add(external)
                     }
-                    if (cameraSelector != CameraSelector.DEFAULT_BACK_CAMERA &&
+                    if (actualSelector != CameraSelector.DEFAULT_BACK_CAMERA &&
                         cameraCoordinator?.hasBackCamera() != false
                     ) {
                         add(CameraSelector.DEFAULT_BACK_CAMERA)
                     }
-                    if (cameraSelector != CameraSelector.DEFAULT_FRONT_CAMERA &&
+                    if (actualSelector != CameraSelector.DEFAULT_FRONT_CAMERA &&
                         cameraCoordinator?.hasFrontCamera() != false
                     ) {
                         add(CameraSelector.DEFAULT_FRONT_CAMERA)
                     }
                 }
+
+                Log.i("BarcodeCamera", "尝试绑定的摄像头列表: ${selectorsToTry.joinToString { it.toString() }}")
 
                 // 等 PreviewView attach 到窗口后再绑定，避免 surface 未就绪
                 bindingRunnable = Runnable {
@@ -215,7 +224,7 @@ fun BarcodeCameraPreview(
                         }
 
                         applyCameraOptimizations(context, camera, previewView)
-                        startPeriodicFocus(camera, previewView) { isScanning.get() }
+                        startPeriodicFocus(camera, previewView) { isScanning }
                             .also { focusRunnable = it }
 
                         // 点击屏幕重新对焦/测光
@@ -297,9 +306,16 @@ private fun applyCameraOptimizations(context: Context, camera: Camera?, previewV
         val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
         val isFixedFocus = minFocusDistance == 0f || afModes == null || afModes.isEmpty()
 
-        Log.d(
+        val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
+        val facingLabel = when (lensFacing) {
+            CameraCharacteristics.LENS_FACING_FRONT -> "前置"
+            CameraCharacteristics.LENS_FACING_BACK -> "后置"
+            CameraCharacteristics.LENS_FACING_EXTERNAL -> "外接"
+            else -> "未知"
+        }
+        Log.i(
             "BarcodeCamera",
-            "Camera optimizations: cameraId=$cameraId, minFocusDistance=$minFocusDistance, " +
+            "当前使用摄像头: cameraId=$cameraId, 方向=$facingLabel, minFocusDistance=$minFocusDistance, " +
                 "afModes=${afModes?.contentToString()}, isFixedFocus=$isFixedFocus"
         )
 
@@ -314,7 +330,7 @@ private fun applyCameraOptimizations(context: Context, camera: Camera?, previewV
 
         try {
             val exposureState = camera.cameraInfo.exposureState
-            if (exposureState?.isExposureCompensationSupported == true) {
+            if (exposureState.isExposureCompensationSupported) {
                 val range = exposureState.exposureCompensationRange
                 val targetIndex = BARCODE_EXPOSURE_COMPENSATION.coerceIn(range.lower, range.upper)
                 camera.cameraControl.setExposureCompensationIndex(targetIndex)
@@ -447,8 +463,8 @@ private fun tryEnhancedScan(
         imageProxy.close()
 
         // 1. 对比度增强：使用 ColorMatrix 拉伸对比度
-        val contrast = 1.8f // 对比度倍数
-        val brightness = -30f // 亮度偏移（稍微降低整体亮度，突出暗色条码）
+        val contrast = 2.2f // 对比度倍数（增加）
+        val brightness = -40f // 亮度偏移（稍微降低整体亮度，突出暗色条码）
         val colorMatrix = android.graphics.ColorMatrix(floatArrayOf(
             contrast, 0f, 0f, 0f, brightness,
             0f, contrast, 0f, 0f, brightness,
@@ -456,14 +472,20 @@ private fun tryEnhancedScan(
             0f, 0f, 0f, 1f, 0f,
         ))
 
-        val enhanced = Bitmap.createBitmap(bitmap.width, bitmap.height, bitmap.config ?: Bitmap.Config.ARGB_8888)
+        // 先缩小再放大，实现轻微锐化效果
+        val halfWidth = bitmap.width / 2
+        val halfHeight = bitmap.height / 2
+        val small = Bitmap.createScaledBitmap(bitmap, halfWidth, halfHeight, true)
+        val enhanced = Bitmap.createScaledBitmap(small, bitmap.width, bitmap.height, true)
+        small.recycle()
+        bitmap.recycle()
+
         val canvas = android.graphics.Canvas(enhanced)
         val paint = android.graphics.Paint().apply {
             colorFilter = android.graphics.ColorMatrixColorFilter(colorMatrix)
             isAntiAlias = true
         }
-        canvas.drawBitmap(bitmap, 0f, 0f, paint)
-        bitmap.recycle()
+        canvas.drawBitmap(enhanced, 0f, 0f, paint)
 
         // 2. 锐化：通过 Canvas 缩放实现轻微锐化效果
         val enhancedInput = InputImage.fromBitmap(enhanced, rotation)

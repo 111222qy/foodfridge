@@ -7,6 +7,7 @@ import com.foodfridge.domain.model.MealType
 import com.foodfridge.domain.model.SampleStatus
 import com.foodfridge.domain.repository.FoodSampleRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 
@@ -28,6 +29,28 @@ class FoodSampleRepositoryImpl @Inject constructor(
         foodSampleDao.updateStatus(id, newStatus)
     }
 
+    override suspend fun updateSample(sample: FoodSample) {
+        foodSampleDao.update(sample.toEntity())
+    }
+
+    override suspend fun disposeSamples(
+        sampleIds: List<Int>,
+        disposedAt: Long,
+        disposedByUserId: Int?,
+        disposedByEmployeeId: String?,
+        disposedByName: String,
+        disposedByRole: String,
+    ): Int {
+        return foodSampleDao.disposeSamples(
+            sampleIds = sampleIds,
+            disposedAt = disposedAt,
+            disposedByUserId = disposedByUserId,
+            disposedByEmployeeId = disposedByEmployeeId,
+            disposedByName = disposedByName,
+            disposedByRole = disposedByRole,
+        )
+    }
+
     override suspend fun insertSample(sample: FoodSample): Long {
         return foodSampleDao.insert(sample.toEntity())
     }
@@ -40,6 +63,18 @@ class FoodSampleRepositoryImpl @Inject constructor(
 
     override suspend fun getLatestSampleByMeal(mealType: String): FoodSample? {
         return foodSampleDao.getLatestSampleByMeal(mealType)?.toDomain()
+    }
+
+    override suspend fun getLatestSamplesByMealAndDate(mealType: String, dayStart: Long, dayEnd: Long): List<FoodSample> {
+        return foodSampleDao.getSamplesByMealAndDate(mealType, dayStart, dayEnd).map { it.map { entity -> entity.toDomain() } }.first()
+    }
+
+    override suspend fun getActiveSamples(): List<FoodSample> {
+        return foodSampleDao.getActiveSamples().map { it.toDomain() }
+    }
+
+    override suspend fun deleteAllSamples() {
+        foodSampleDao.deleteAllSamples()
     }
 
     // Mappers
@@ -55,7 +90,12 @@ class FoodSampleRepositoryImpl @Inject constructor(
             status = SampleStatus.valueOf(status),
             storeTime = storeTime,
             expireTime = expireTime,
-            createdAt = createdAt
+            createdAt = createdAt,
+            disposedAt = disposedAt,
+            disposedByUserId = disposedByUserId,
+            disposedByEmployeeId = disposedByEmployeeId,
+            disposedByName = disposedByName,
+            disposedByRole = disposedByRole,
         )
     }
 
@@ -71,7 +111,12 @@ class FoodSampleRepositoryImpl @Inject constructor(
             status = status.name,
             storeTime = storeTime,
             expireTime = expireTime,
-            createdAt = createdAt
+            createdAt = createdAt,
+            disposedAt = disposedAt,
+            disposedByUserId = disposedByUserId,
+            disposedByEmployeeId = disposedByEmployeeId,
+            disposedByName = disposedByName,
+            disposedByRole = disposedByRole,
         )
     }
 }

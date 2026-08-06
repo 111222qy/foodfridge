@@ -40,8 +40,6 @@ interface DeviceUploadApiService {
 
     /**
      * 温度上报。
-     *
-     * 路径与《设备接入方案》第 5.2.2 节对齐。
      */
     @POST("/api/device/sampling-fridge/temperature/upload")
     suspend fun uploadTemperature(
@@ -50,8 +48,6 @@ interface DeviceUploadApiService {
 
     /**
      * 开关门记录上报。
-     *
-     * 路径与《设备接入方案》第 5.2.3 节对齐。
      */
     @POST("/api/device/sampling-fridge/door/record")
     suspend fun uploadDoorRecord(

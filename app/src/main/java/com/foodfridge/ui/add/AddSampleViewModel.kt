@@ -10,6 +10,7 @@ import com.foodfridge.domain.model.MealType
 import com.foodfridge.domain.model.SampleStatus
 import com.foodfridge.domain.repository.DeviceUploadRepository
 import com.foodfridge.domain.repository.FoodSampleRepository
+import com.foodfridge.domain.scan.BarcodePayload
 import com.foodfridge.utils.DeviceInfoProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -57,19 +58,21 @@ class AddSampleViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(mealType = mealType)
     }
 
-    fun simulateBarcodeScan() {
-        _uiState.value = _uiState.value.copy(isScanning = true)
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(1500)
-            val mockFoods = listOf("红烧肉", "清蒸鱼", "番茄炒蛋", "宫保鸡丁", "麻婆豆腐")
-            val randomFood = mockFoods.random()
-            _uiState.value = _uiState.value.copy(
-                isScanning = false,
-                foodName = randomFood,
-                barcode = "BARCODE_${System.currentTimeMillis()}",
-                errorMessage = null,
-            )
-        }
+    /**
+     * 从串口扫码器返回的真实条码结果回填表单。
+     */
+    fun onScanResult(rawBarcode: String, payload: BarcodePayload) {
+        val matchedMealType = MealType.entries.firstOrNull {
+            it.displayName == payload.mealType
+        } ?: MealType.BREAKFAST
+
+        _uiState.value = _uiState.value.copy(
+            foodName = payload.dishName,
+            weightGrams = String.format(java.util.Locale.US, "%.1f", payload.weightGrams),
+            mealType = matchedMealType,
+            barcode = rawBarcode,
+            errorMessage = null,
+        )
     }
 
     fun saveSample(onSuccess: () -> Unit) {
@@ -133,6 +136,7 @@ class AddSampleViewModel @Inject constructor(
                         device_id = deviceId,
                         timestamp = sample.storeTime,
                         dish_name = sample.foodName,
+                        meal_type = sample.mealType.name,
                         operator_name = sample.operatorName,
                         weight = sample.weightGrams,
                     )

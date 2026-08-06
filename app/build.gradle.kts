@@ -12,14 +12,12 @@ android {
 
     defaultConfig {
         applicationId = "com.foodfridge"
-        minSdk = 26
+        minSdk = 25
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
         buildConfigField("String", "API_BASE_URL", "\"https://api-v4.debug.packertec.com/\"")
-        // TODO: 替换为设备注册后下发的真实 api-key
-        buildConfigField("String", "API_DEVICE_KEY", "\"dev_XEnzlmN94Uoi2ePnnG4vqYBjz98pSnmG_uBiCW9zR7g\"")
         buildConfigField("String", "SM4_KEY", "\"Z5S0FQBZHTHCHHOW\"")
         buildConfigField("String", "SM4_IV", "\"VGSHUMIOL409QQCF\"")
         buildConfigField("String", "APISIX_HEADER", "\"djdhJSJSHDHQK2,66556sskakjdajdj@@curls\"")
@@ -28,8 +26,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         ndk {
-            // RK3568 是 arm64-v8a 架构
-            abiFilters.add("arm64-v8a")
+            // 支持 armeabi-v7a（32 位设备）和 arm64-v8a（64 位设备）
+            abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
         }
         
         vectorDrawables {
@@ -69,6 +67,13 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            pickFirsts += setOf(
+                "**/libc++_shared.so",
+                "**/libqzheng-if.so",
+                "**/libserial_port.so",
+            )
         }
     }
 }
@@ -115,7 +120,7 @@ dependencies {
 
     // Hilt
     implementation("com.google.dagger:hilt-android:2.50")
-    implementation(files("libs\\api.jar"))
+    implementation(files("libs\\q-zhenglib.aar"))
     kapt("com.google.dagger:hilt-android-compiler:2.50")
     implementation("androidx.hilt:hilt-navigation-compose:1.1.0")
 
@@ -134,6 +139,12 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // USB serial
+    implementation("com.github.mik3y:usb-serial-for-android:3.8.0")
+
+    // JNI Serial Port (android-serialport-api fork, via termios)
+    implementation("com.licheedev:android-serialport:2.1.4")
 
     // Network
     implementation("com.squareup.retrofit2:retrofit:2.9.0")

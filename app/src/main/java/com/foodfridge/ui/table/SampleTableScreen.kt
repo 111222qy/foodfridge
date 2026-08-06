@@ -326,9 +326,9 @@ private fun ScanResultCard(
                 }
             }
 
-            // 条形码（较小字体）
+            // 二维码（较小字体）
             Text(
-                text = "条码: $barcode",
+                text = "二维码: $barcode",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF9CA3AF),
                 fontSize = 11.sp,
@@ -368,11 +368,13 @@ private fun SampleTable(samples: List<com.foodfridge.domain.model.FoodSample>) {
                 val statusColor = when (sample.status) {
                     SampleStatus.STORING -> Color(0xFF2563EB)
                     SampleStatus.WAITING_DISPOSE -> Color(0xFFF97316)
+                    SampleStatus.DISPOSED -> Color(0xFF22C55E)
                     SampleStatus.WAITING -> Color(0xFF6B7280)
                 }
                 val statusBg = when (sample.status) {
                     SampleStatus.STORING -> Color(0xFFDBEAFE)
                     SampleStatus.WAITING_DISPOSE -> Color(0xFFFFEDD5)
+                    SampleStatus.DISPOSED -> Color(0xFFDCFCE7)
                     SampleStatus.WAITING -> Color(0xFFF3F4F6)
                 }
 

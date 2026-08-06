@@ -46,6 +46,7 @@ import com.foodfridge.domain.model.MealType
 @Composable
 fun AddSampleScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToSerialScan: () -> Unit,
     viewModel: AddSampleViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -90,12 +91,12 @@ fun AddSampleScreen(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // 条形码扫描按钮
+            // 串口扫码按钮
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = !uiState.isScanning) {
-                        viewModel.simulateBarcodeScan()
+                    .clickable(enabled = !uiState.isSaving) {
+                        onNavigateToSerialScan()
                     },
                 shape = RoundedCornerShape(16.dp),
                 color = Color(0xFFEFF6FF),
@@ -108,33 +109,19 @@ fun AddSampleScreen(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (uiState.isScanning) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = Color(0xFF2563EB),
-                            strokeWidth = 2.dp,
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "正在扫描条形码...",
-                            color = Color(0xFF2563EB),
-                            fontWeight = FontWeight.Medium,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.QrCodeScanner,
-                            contentDescription = null,
-                            modifier = Modifier.size(28.dp),
-                            tint = Color(0xFF2563EB),
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = if (uiState.barcode.isNotBlank()) "已扫描: ${uiState.foodName}" else "点击扫描条形码",
-                            color = Color(0xFF2563EB),
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 16.sp,
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.QrCodeScanner,
+                        contentDescription = null,
+                        modifier = Modifier.size(28.dp),
+                        tint = Color(0xFF2563EB),
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = if (uiState.barcode.isNotBlank()) "已扫描: ${uiState.foodName}" else "点击扫码",
+                        color = Color(0xFF2563EB),
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 16.sp,
+                    )
                 }
             }
 

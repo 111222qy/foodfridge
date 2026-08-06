@@ -8,7 +8,7 @@ import androidx.room.Index
 @Entity(
     tableName = "food_samples",
     indices = [
-        Index(value = ["meal_type", "created_at"]),
+        Index(value = ["meal_type", "store_time"]),
         Index(value = ["status", "expire_time"])
     ]
 )
@@ -44,5 +44,20 @@ data class FoodSampleEntity(
     val expireTime: Long,
 
     @ColumnInfo(name = "created_at")
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "disposed_at")
+    val disposedAt: Long? = null,
+
+    @ColumnInfo(name = "disposed_by_user_id")
+    val disposedByUserId: Int? = null,
+
+    @ColumnInfo(name = "disposed_by_employee_id")
+    val disposedByEmployeeId: String? = null,
+
+    @ColumnInfo(name = "disposed_by_name")
+    val disposedByName: String? = null,
+
+    @ColumnInfo(name = "disposed_by_role")
+    val disposedByRole: String? = null,
 )

@@ -1,6 +1,7 @@
 package com.foodfridge.ui.facecheck
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,7 @@ import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.foodfridge.data.camera.CameraCoordinator
+import com.foodfridge.domain.auth.FaceAuthenticationPolicy
 import com.foodfridge.ui.home.AuthUser
 import com.foodfridge.ui.theme.DarkBg
 import com.foodfridge.ui.theme.DarkCard
@@ -53,10 +55,26 @@ fun FaceRecognitionGateScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var cameraBindError by remember { mutableStateOf<String?>(null) }
-    val cameraEnabled = uiState.successToken <= 0
     var isNavigating by remember { mutableStateOf(false) }
+    var isBackPending by remember { mutableStateOf(false) }
+    var hasBackDispatched by remember { mutableStateOf(false) }
+    var isCameraBound by remember { mutableStateOf(false) }
+    val cameraEnabled = uiState.successToken <= 0 && !isBackPending
 
     val isSuccess = uiState.successToken > 0
+    val authenticatedRoles = existingAuthUsers.map { it.role }
+    val allowedRoles = FaceAuthenticationPolicy.allowedRoles(
+        dualFaceEnabled = dualFaceAuthEnabled,
+        authenticatedRoles = authenticatedRoles,
+    )
+    val gateTitle = when {
+        !dualFaceAuthEnabled -> "留样员刷脸开门"
+        existingAuthUsers.isEmpty() -> "双人认证：请监督员或留样员刷脸"
+        else -> {
+            val requiredRole = allowedRoles.singleOrNull()
+            "双人认证：请${requiredRole?.let(FaceAuthenticationPolicy::displayName) ?: "另一位人员"}刷脸"
+        }
+    }
 
     // key 只依赖 isSuccess，避免 isNavigating 变化导致 LaunchedEffect restart
     LaunchedEffect(isSuccess) {
@@ -73,11 +91,32 @@ fun FaceRecognitionGateScreen(
         }
     }
 
+    // 返回流程只启动一次；等待当前用例解绑，同时用超时保证页面不会卡住。
+    LaunchedEffect(isBackPending) {
+        if (isBackPending && !hasBackDispatched) {
+            val releaseDeadline = SystemClock.elapsedRealtime() + 1_000L
+            while (isCameraBound && SystemClock.elapsedRealtime() < releaseDeadline) {
+                delay(16)
+            }
+            if (isCameraBound) {
+                Log.w("FaceRecognition", "Timed out waiting for camera release; returning to home")
+            } else {
+                Log.d("FaceRecognition", "Camera released; returning to home")
+            }
+            hasBackDispatched = true
+            onBack()
+        }
+    }
+
     // Stable callbacks using remember - only change when viewModel changes
-    val onFrameCallback = remember(viewModel) {
+    val onFrameCallback = remember(viewModel, allowedRoles) {
         { frame: Bitmap ->
             Log.d("FaceRecognition", "Frame received, calling verifyAndContinue")
-            viewModel.verifyAndContinue(frame, isAutoScan = true)
+            viewModel.verifyAndContinue(
+                frame = frame,
+                isAutoScan = true,
+                allowedRoles = allowedRoles,
+            )
         }
     }
 
@@ -93,8 +132,8 @@ fun FaceRecognitionGateScreen(
     BackHandler(enabled = !isNavigating) {
         if (!isNavigating) {
             isNavigating = true
-            // 摄像头释放统一交给 FaceGateCameraPreview.DisposableEffect.onDispose 处理
-            onBack()
+            isBackPending = true
+            Log.d("FaceRecognition", "Back requested; waiting for camera release")
         }
     }
 
@@ -124,7 +163,7 @@ fun FaceRecognitionGateScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 Text(
-                    text = "留样员刷脸开门",
+                    text = gateTitle,
                     color = Color.White,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
@@ -143,7 +182,7 @@ fun FaceRecognitionGateScreen(
             FaceGateCameraPreview(
                 onFrame = onFrameCallback,
                 onCameraError = onCameraErrorCallback,
-                onCameraBoundChanged = {},
+                onCameraBoundChanged = { isCameraBound = it },
                 enabled = cameraEnabled,
                 cameraCoordinator = cameraCoordinator,
                 modifier = Modifier.fillMaxSize(),

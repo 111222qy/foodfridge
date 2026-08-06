@@ -14,10 +14,22 @@ object DeviceInfoProvider {
     private const val TAG = "DeviceInfo"
 
     fun getDeviceNumber(context: Context): String {
+        // 优先使用新 SDK 的硬件唯一标识（不受系统升级影响）
+        return try {
+            com.q_zheng.QZhengIFManager(context).deviceNumber
+                ?.takeIf { it.isNotBlank() }
+                ?: fallbackDeviceNumber(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "QZhengIFManager.getDeviceNumber failed, using fallback", e)
+            fallbackDeviceNumber(context)
+        }
+    }
+
+    private fun fallbackDeviceNumber(context: Context): String {
         val serial = try {
+            @Suppress("DEPRECATION")
             Build.SERIAL.takeIf { it != "unknown" && it != Build.UNKNOWN && it.isNotBlank() }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to get serial", e)
             null
         }
 
@@ -25,13 +37,10 @@ object DeviceInfoProvider {
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
                 .takeIf { it != "9774d56d682e549c" }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to get android id", e)
             null
         }
 
-        val uniqueId = UUID.randomUUID().toString()
-
-        return serial ?: androidId ?: uniqueId
+        return serial ?: androidId ?: UUID.randomUUID().toString()
     }
 
     fun getMacAddress(context: Context): String {
@@ -51,6 +60,7 @@ object DeviceInfoProvider {
     private fun getWifiMacAddress(context: Context): String? {
         return try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
             wifiManager.connectionInfo?.macAddress
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get wifi mac", e)

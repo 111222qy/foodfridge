@@ -56,17 +56,12 @@ import java.util.Locale
 @Composable
 fun BarcodeScanScreen(
     mealType: String,
-    dayOffset: Int,
+    @Suppress("UNUSED_PARAMETER") dayOffset: Int,
     onNavigateBack: () -> Unit,
     onScanComplete: (String, BarcodePayload) -> Unit,
-    cameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+    cameraSelector: CameraSelector? = null, // 如果为null，则使用CameraCoordinator推荐的摄像头
     cameraCoordinator: CameraCoordinator? = null,
 ) {
-    @Suppress("UNUSED_PARAMETER")
-    val _mealType = mealType
-    @Suppress("UNUSED_PARAMETER")
-    val _dayOffset = dayOffset
-
     var scanState by remember { mutableStateOf<ScanState>(ScanState.Scanning) }
     var scanKey by remember { mutableStateOf(0) }
 
@@ -75,16 +70,21 @@ fun BarcodeScanScreen(
         scanState = ScanState.Scanning
     }
 
+    // 自动重置：错误状态显示 2 秒后自动恢复扫描
+    LaunchedEffect(scanState) {
+        if (scanState is ScanState.Error) {
+            delay(2000)
+            scanKey++
+            scanState = ScanState.Scanning
+        }
+    }
+
     LaunchedEffect(scanState) {
         when (scanState) {
             is ScanState.Success -> {
                 delay(1200)
                 val success = scanState as ScanState.Success
                 onScanComplete(success.rawBarcode, success.payload)
-            }
-            is ScanState.Error -> {
-                delay(2000)
-                scanState = ScanState.Scanning
             }
             else -> {}
         }
@@ -114,7 +114,7 @@ fun BarcodeScanScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = "扫描条形码",
+                    text = "扫描二维码",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
@@ -125,23 +125,36 @@ fun BarcodeScanScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // 扫描框（相机预览）- 提取为独立 composable 避免 ColumnScope 冲突
+        // 扫描框（相机预览）- 居中且更大
         ScanFrame(
             scanState = scanState,
             scanKey = scanKey,
             onBarcodeDetected = { rawValue ->
                 Timber.i("Raw barcode detected: $rawValue")
                 val payload = BarcodeDecoder.decode(rawValue)
-                if (payload != null) {
-                    scanState = ScanState.Success(rawValue, payload)
-                } else {
+                if (payload == null) {
                     val message = if (rawValue.startsWith("${BarcodeDecoder.MAGIC}|")) {
-                        "条码格式错误，请检查小票"
+                        "二维码格式错误，请检查小票"
                     } else {
-                        "检测到非留样条码：$rawValue"
+                        "检测到非留样二维码：$rawValue"
                     }
                     scanState = ScanState.Error(message)
+                    return@ScanFrame
                 }
+                // 校验餐次是否匹配当前页面
+                val currentMealDisplay = when (mealType) {
+                    "BREAKFAST" -> "早餐"
+                    "LUNCH" -> "午餐"
+                    "DINNER" -> "晚餐"
+                    else -> mealType
+                }
+                if (payload.mealType != currentMealDisplay) {
+                    scanState = ScanState.Error(
+                        "餐次不匹配：当前为${currentMealDisplay}，标签是${payload.mealType}"
+                    )
+                    return@ScanFrame
+                }
+                scanState = ScanState.Success(rawValue, payload)
             },
             onCameraError = { error ->
                 if (error != null) {
@@ -159,7 +172,7 @@ fun BarcodeScanScreen(
         when (scanState) {
             is ScanState.Scanning -> {
                 Text(
-                    text = "请对准留样小票上的条形码\n（保持 15-25 厘米距离，避免反光和抖动）",
+                    text = "请对准留样小票上的二维码\n（保持 8-20 厘米距离，避免反光和抖动）",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                     color = Color.White.copy(alpha = 0.8f),
@@ -202,7 +215,7 @@ fun BarcodeScanScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.weight(1f))
     }
 }
 
@@ -406,7 +419,7 @@ private fun ScanFrame(
     onBarcodeDetected: (String) -> Unit,
     onCameraError: (String?) -> Unit,
     onRescan: () -> Unit,
-    cameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+    cameraSelector: CameraSelector? = null, // 如果为null，则使用CameraCoordinator推荐的摄像头
     cameraCoordinator: CameraCoordinator? = null,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -427,7 +440,7 @@ private fun ScanFrame(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(360.dp)
+            .height(520.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(Color.Black),
         contentAlignment = Alignment.Center,
@@ -487,7 +500,7 @@ private fun ScanFrame(
                         modifier = Modifier.size(48.dp),
                     )
                     Text(
-                        text = "需要相机权限以扫描条形码",
+                        text = "需要相机权限以扫描二维码",
                         fontSize = 14.sp,
                         color = Color.White.copy(alpha = 0.8f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,

@@ -170,6 +170,7 @@ fun FaceEnrollScreen(
                         onCameraError = onCameraErrorCallback,
                         onCameraBoundChanged = {},
                         enabled = !viewModel.success && viewModel.isEngineReady,
+                        highQuality = true,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

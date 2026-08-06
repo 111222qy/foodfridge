@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.KeyEvent
+import android.view.Window
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -16,6 +18,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.foodfridge.data.hardware.HardwareManager
+import com.foodfridge.data.hardware.KeyboardBarcodeCollector
 import com.foodfridge.service.FridgeKeepAliveService
 import com.foodfridge.ui.navigation.AppNavigation
 import com.foodfridge.ui.navigation.Screen
@@ -41,6 +44,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Timber.i("MainActivity onCreate")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        installKeyEventInterceptor()
         checkAndRequestPermissions()
 
         setContent {
@@ -53,13 +57,39 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 配置变更（如屏幕旋转）会导致 Activity 重建，此时不应清理硬件状态，
+        // 否则当前用户会话会被打断、温度监控会停止。
+        // 真正的后台/退出清理由 FoodFridgeApp 的 ActivityLifecycleCallbacks.onActivityStopped 兜底。
+        if (isChangingConfigurations) {
+            Timber.i("MainActivity onDestroy due to config change - skipping hardware cleanup")
+            return
+        }
         Timber.i("MainActivity onDestroy - locking door and turning off light")
         try {
             hardwareManager.lockDoor()
             hardwareManager.lightOff()
-            hardwareManager.stopTemperatureReading()
         } catch (e: Exception) {
             Timber.e(e, "Failed to lock door on destroy")
+        }
+    }
+
+    private fun installKeyEventInterceptor() {
+        val originalCallback = window.callback
+        window.callback = object : Window.Callback by originalCallback {
+            override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+                event?.let { keyEvent ->
+                    if (keyEvent.action == KeyEvent.ACTION_DOWN) {
+                        val device = keyEvent.device
+                        Timber.d("KeyEvent: keyCode=${keyEvent.keyCode} unicode=${keyEvent.unicodeChar} " +
+                            "device=${device?.name} id=${device?.id} isVirtual=${device?.isVirtual} " +
+                            "sources=${device?.sources}")
+                    }
+                    if (KeyboardBarcodeCollector.processKeyEvent(keyEvent)) {
+                        return true
+                    }
+                }
+                return originalCallback?.dispatchKeyEvent(event) ?: false
+            }
         }
     }
 

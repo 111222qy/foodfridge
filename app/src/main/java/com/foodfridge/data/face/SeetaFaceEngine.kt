@@ -229,18 +229,22 @@ class SeetaFaceEngine @Inject constructor(
             }
             isInitialized.set(true)
 
-            // Warm-up: ensure native detector is fully ready before accepting real frames
-            val warmUpBitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
-            try {
-                val warmUpFaces = synchronized(nativeLock) {
-                    FaceSdk.detect(warmUpBitmap)
+            // Warm-up: do multiple detections to ensure native detector is fully ready
+            val warmUpSizes = listOf(100, 200, 320)
+            for (size in warmUpSizes) {
+                val warmUpBitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                try {
+                    val warmUpFaces = synchronized(nativeLock) {
+                        FaceSdk.detect(warmUpBitmap)
+                    }
+                    Log.i("SeetaFaceEngine", "Warm-up detect ${size}x${size}: ${warmUpFaces.size} faces")
+                } catch (e: Exception) {
+                    Log.w("SeetaFaceEngine", "Warm-up detect failed for ${size}x${size} (non-critical)", e)
+                } finally {
+                    warmUpBitmap.recycle()
                 }
-                Log.i("SeetaFaceEngine", "init ok ($source) time=${elapsed}ms, warm-up detect returned ${warmUpFaces.size} faces")
-            } catch (e: Exception) {
-                Log.w("SeetaFaceEngine", "Warm-up detect failed (non-critical), engine may still work", e)
-            } finally {
-                warmUpBitmap.recycle()
             }
+            Log.i("SeetaFaceEngine", "init ok ($source) time=${elapsed}ms, warm-up complete")
 
             refreshUserCache()
         }
@@ -520,6 +524,14 @@ class SeetaFaceEngine @Inject constructor(
             return
         }
         refreshUserCacheInternal()
+    }
+
+    override fun removeUserFromCache(userId: Int) {
+        val removed = userFeatureCache.remove(userId)
+        Log.i(
+            "SeetaFaceEngine",
+            "Removed user from face cache: userId=$userId, existed=${removed != null}",
+        )
     }
 
     private fun refreshUserCacheInternal() {

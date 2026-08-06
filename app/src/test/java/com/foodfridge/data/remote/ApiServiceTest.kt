@@ -28,9 +28,10 @@ class ApiServiceTest {
     fun testActivateDevice() = runBlocking {
         try {
             val response = apiService.activateDevice(
-                token = "test_token",
-                smKeys = "test_sm_keys",
-                request = ActivateRequest(
+                "test_apisix",
+                "test_token",
+                "test_sm_keys",
+                ActivateRequest(
                     device_number = "0123456789ABCDEF",
                     device_mac = "00:11:22:33:44:55",
                     activation_code = "test_code"

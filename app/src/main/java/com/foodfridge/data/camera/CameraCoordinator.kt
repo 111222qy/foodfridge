@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.util.Log
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalLensFacing
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -181,27 +182,86 @@ class CameraCoordinator @Inject constructor(
     /**
      * 获取推荐的扫码摄像头选择器
      *
-     * 优先使用外接摄像头（USB），其次前置，最后后置。
+     * 策略：扫码应使用与人脸识别不同的摄像头，避免冲突。
+     * 当设备有多个后置摄像头时，优先使用非主后置摄像头（cameraId=1）。
+     * 优先级：外接摄像头 → 非主后置摄像头 → 主后置摄像头 → 前置摄像头（最后回退）
      */
     fun getRecommendedBarcodeCameraSelector(): CameraSelector {
-        return when {
-            hasExternalCamera() -> externalCameraSelector()
-            hasFrontCamera() -> CameraSelector.DEFAULT_FRONT_CAMERA
-            else -> CameraSelector.DEFAULT_BACK_CAMERA
+        val cameras = enumerateCameras()
+        Log.i(TAG, "设备摄像头列表: ${cameras.joinToString { "${it.cameraId}(${it.lensFacing})" }}")
+
+        val selector = when {
+            hasExternalCamera() -> {
+                Log.i(TAG, "扫码摄像头选择: 外接摄像头")
+                externalCameraSelector()
+            }
+            // 如果有多个后置摄像头，使用 cameraId=1（非主摄像头），避免与面部识别冲突
+            getBackCameraIds().size > 1 -> {
+                val secondaryBackId = getBackCameraIds()[1]
+                Log.i(TAG, "扫码摄像头选择: 次后置摄像头 (cameraId=$secondaryBackId)，避免与面部识别冲突")
+                buildCameraSelectorById(secondaryBackId)
+            }
+            hasBackCamera() -> {
+                Log.i(TAG, "扫码摄像头选择: 主后置摄像头")
+                CameraSelector.DEFAULT_BACK_CAMERA
+            }
+            hasFrontCamera() -> {
+                Log.i(TAG, "扫码摄像头选择: 前置摄像头(回退)")
+                CameraSelector.DEFAULT_FRONT_CAMERA
+            }
+            else -> {
+                Log.w(TAG, "扫码摄像头选择: 未检测到可用摄像头，使用默认后置")
+                CameraSelector.DEFAULT_BACK_CAMERA
+            }
         }
+        return selector
     }
 
     /**
      * 获取推荐的人脸识别摄像头选择器
      *
-     * 优先使用前置摄像头
+     * 优先使用前置摄像头，如果没有则使用主后置摄像头（cameraId=0）
      */
     fun getRecommendedFaceCameraSelector(): CameraSelector {
         return if (hasFrontCamera()) {
+            Log.i(TAG, "人脸识别摄像头选择: 前置摄像头")
             CameraSelector.DEFAULT_FRONT_CAMERA
         } else {
-            CameraSelector.DEFAULT_BACK_CAMERA
+            // 使用主后置摄像头（cameraId=0）
+            val primaryBackId = getBackCameraIds().firstOrNull() ?: "0"
+            Log.i(TAG, "人脸识别摄像头选择: 主后置摄像头 (cameraId=$primaryBackId)")
+            buildCameraSelectorById(primaryBackId)
         }
+    }
+
+    /**
+     * 获取所有后置摄像头的 cameraId 列表
+     */
+    private fun getBackCameraIds(): List<String> {
+        return enumerateCameras()
+            .filter { it.lensFacing == "back" }
+            .map { it.cameraId }
+            .sorted()
+    }
+
+    /**
+     * 根据 cameraId 构建 CameraSelector
+     */
+    @OptIn(ExperimentalLensFacing::class)
+    private fun buildCameraSelectorById(cameraId: String): CameraSelector {
+        return CameraSelector.Builder()
+            .addCameraFilter { cameras ->
+                cameras.filter { cameraInfo ->
+                    // androidx.camera.core.CameraInfo 需要通过 Camera2CameraInfo 获取 cameraId
+                    try {
+                        val camId = androidx.camera.camera2.interop.Camera2CameraInfo.from(cameraInfo).cameraId
+                        camId == cameraId
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
+            }
+            .build()
     }
 
     /**

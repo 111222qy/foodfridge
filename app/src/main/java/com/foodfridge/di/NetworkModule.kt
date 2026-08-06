@@ -25,8 +25,12 @@ object NetworkModule {
     @Singleton
     fun provideOkHttpClient(): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
+            redactHeader("apisix")
+            redactHeader("Token")
+            redactHeader("SmKeys")
             level = if (BuildConfig.DEBUG) {
-                HttpLoggingInterceptor.Level.BODY
+                // HEADERS 避免大响应体导致 OOM
+                HttpLoggingInterceptor.Level.HEADERS
             } else {
                 HttpLoggingInterceptor.Level.NONE
             }
@@ -66,8 +70,10 @@ object NetworkModule {
         dynamicBaseUrlInterceptor: DynamicBaseUrlInterceptor,
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
+            redactHeader("api-key")
             level = if (BuildConfig.DEBUG) {
-                HttpLoggingInterceptor.Level.BODY
+                // HEADERS 避免大响应体导致 OOM
+                HttpLoggingInterceptor.Level.HEADERS
             } else {
                 HttpLoggingInterceptor.Level.NONE
             }
